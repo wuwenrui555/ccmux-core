@@ -1,0 +1,215 @@
+"""TmuxBinding dataclass + discovery helpers.
+
+Two helpers:
+
+* :func:`list_live_tmux_bindings` — synchronous one-shot scan of
+  ``events.jsonl`` that returns the current per-tmux-session
+  bindings.
+* :func:`discover_tmux_sessions` — async iterator yielding
+  bindings as new tmux sessions appear.
+
+Both rely on the primary-session-tracking rules in the design
+spec: subagent session_ids never override an existing primary,
+``/clear``'s ``session_end`` clears primary in expectation of a
+rebind from the next ``session_start``, ``prompt_input_exit``
+keeps primary intact.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from pathlib import Path
+
+from claude_tap.config import events_path as _default_events_path
+
+
+@dataclass(frozen=True)
+class TmuxBinding:
+    """Current mapping for one tmux session.
+
+    Produced by :func:`list_live_tmux_bindings` (snapshot) and
+    :func:`discover_tmux_sessions` (stream).
+    """
+
+    tmux_session: str
+    pane_id: str
+    window_id: str
+    primary_session_id: str
+    last_event_at: str
+
+
+def list_live_tmux_bindings(
+    events_path: Path | None = None,
+) -> list[TmuxBinding]:
+    """One-shot snapshot of currently-live tmux session bindings.
+
+    Reads events.jsonl, processes every entry, returns the current
+    bindings list. "Live" means the most recent state for the tmux
+    session leaves ``primary_session_id`` set (not in a post-/clear
+    gap, not after a fatal session_end).
+
+    Returns ``[]`` if events.jsonl does not exist, is empty, or
+    contains no live bindings. Skips malformed JSONL lines.
+    """
+    path = events_path if events_path is not None else _default_events_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    bindings: dict[str, _MutableBinding] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        _step(bindings, ev)
+
+    return [
+        TmuxBinding(
+            tmux_session=b.tmux_session,
+            pane_id=b.pane_id,
+            window_id=b.window_id,
+            primary_session_id=b.primary_session_id or "",
+            last_event_at=b.last_event_at,
+        )
+        for b in bindings.values()
+        if b.primary_session_id is not None
+    ]
+
+
+async def discover_tmux_sessions(
+    events_path: Path | None = None,
+    include_existing: bool = True,
+) -> AsyncIterator[TmuxBinding]:
+    """Yield :class:`TmuxBinding` on each new tmux session entering an
+    observable state.
+
+    ``include_existing=True`` (default): first yields the result of
+    :func:`list_live_tmux_bindings`, then tails events.jsonl for
+    genuinely new ones.
+
+    ``include_existing=False``: only yields on tmux session names
+    first seen in events.jsonl entries written after subscribe.
+
+    Rebinds (a tmux session's primary changing via /clear) are NOT
+    re-yielded; existing Backend instances follow rebinds
+    internally and surface them via b.states().
+    """
+    path = events_path if events_path is not None else _default_events_path()
+    yielded: set[str] = set()
+
+    if include_existing:
+        for binding in list_live_tmux_bindings(events_path=path):
+            yielded.add(binding.tmux_session)
+            yield binding
+
+    bindings: dict[str, _MutableBinding] = {}
+    while not path.exists():
+        await asyncio.sleep(0.1)
+
+    with open(path, encoding="utf-8") as f:
+        f.seek(0, 2)  # EOF
+        buf = ""
+        while True:
+            line = f.readline()
+            if not line:
+                await asyncio.sleep(0.1)
+                continue
+            buf += line
+            if not buf.endswith("\n"):
+                continue
+            try:
+                ev = json.loads(buf.rstrip("\n"))
+            except json.JSONDecodeError:
+                buf = ""
+                continue
+            buf = ""
+            _step(bindings, ev)
+            for tmux_session, b in list(bindings.items()):
+                if tmux_session not in yielded and b.primary_session_id is not None:
+                    yielded.add(tmux_session)
+                    yield TmuxBinding(
+                        tmux_session=b.tmux_session,
+                        pane_id=b.pane_id,
+                        window_id=b.window_id,
+                        primary_session_id=b.primary_session_id,
+                        last_event_at=b.last_event_at,
+                    )
+
+
+# ---------------------------------------------------------------------------
+# Internal: mutable binding record + per-event step
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _MutableBinding:
+    tmux_session: str
+    pane_id: str
+    window_id: str
+    primary_session_id: str | None
+    last_event_at: str
+
+
+def _step(bindings: dict[str, _MutableBinding], event: dict) -> None:
+    """Apply one event to the bindings dict in place.
+
+    Mirrors the primary-tracking rules in state_machine.apply().
+    """
+    tmux = event.get("tmux") or {}
+    tmux_session = tmux.get("session_name")
+    if not tmux_session:
+        return
+    sid = (event.get("claude") or {}).get("session_id", "")
+    if not sid:
+        return
+    et = event.get("event_type", "")
+    payload = event.get("payload") or {}
+    ts = event.get("timestamp", "")
+
+    b = bindings.get(tmux_session)
+
+    if et == "session_start":
+        if b is None or b.primary_session_id is None:
+            bindings[tmux_session] = _MutableBinding(
+                tmux_session=tmux_session,
+                pane_id=tmux.get("pane_id", ""),
+                window_id=tmux.get("window_id", ""),
+                primary_session_id=sid,
+                last_event_at=ts,
+            )
+            return
+        b.last_event_at = ts
+        return
+
+    if et == "session_end":
+        if b is None or sid != b.primary_session_id:
+            if b is not None:
+                b.last_event_at = ts
+            return
+        reason = payload.get("reason", "")
+        if reason == "clear":
+            b.primary_session_id = None
+            b.last_event_at = ts
+            return
+        if reason == "prompt_input_exit":
+            b.last_event_at = ts
+            return
+        del bindings[tmux_session]
+        return
+
+    if b is None:
+        return
+    if sid == b.primary_session_id:
+        b.last_event_at = ts
+        b.pane_id = tmux.get("pane_id", b.pane_id)
+        b.window_id = tmux.get("window_id", b.window_id)
+    else:
+        b.last_event_at = ts
