@@ -16,7 +16,6 @@ import pytest
 from ccmux_core.backend import Backend
 from ccmux_core.state import Dead, Idle, Working
 
-
 # ---------------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------------
@@ -25,7 +24,7 @@ from ccmux_core.state import Dead, Idle, Working
 class _FakeEventStream:
     """In-memory async iterator over a pre-baked list of events."""
 
-    instances: list["_FakeEventStream"] = []
+    instances: list[_FakeEventStream] = []
 
     def __init__(
         self,
@@ -69,7 +68,7 @@ class _FakeMessageStream:
 
 
 class _FakeSpinnerMonitor:
-    instances: list["_FakeSpinnerMonitor"] = []
+    instances: list[_FakeSpinnerMonitor] = []
 
     def __init__(self, pane_id: str, poll_interval: float | None = None):
         self.pane_id = pane_id
@@ -148,7 +147,8 @@ async def test_backend_emits_initial_idle_start(monkeypatch):
 
     later_ts = "2099-12-31T23:59:59+00:00"
     monkeypatch.setattr(
-        bk, "EventStream",
+        bk,
+        "EventStream",
         lambda **kw: _FakeEventStream([_ev("session_start", ts=later_ts)]),
     )
 
@@ -286,7 +286,7 @@ async def test_backend_clear_does_not_emit_dead(monkeypatch):
 
         try:
             await asyncio.wait_for(consume(), timeout=0.5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
     # Both session_starts produce Idle(start); the second is coalesced.
@@ -328,7 +328,7 @@ async def test_backend_process_probe_declares_dead(monkeypatch):
 
         try:
             await asyncio.wait_for(consume(), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
     assert any(isinstance(s, Dead) and s.reason == "process_gone" for s in out)
@@ -365,9 +365,7 @@ async def test_backend_spinner_grace_fires_from_working(monkeypatch):
         async def consume():
             async for s in b.states():
                 out.append(s)
-                if any(
-                    isinstance(x, Idle) and x.reason == "interrupted" for x in out
-                ):
+                if any(isinstance(x, Idle) and x.reason == "interrupted" for x in out):
                     break
 
         await asyncio.wait_for(consume(), timeout=2.0)

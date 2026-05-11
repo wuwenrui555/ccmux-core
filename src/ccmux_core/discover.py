@@ -133,10 +133,7 @@ async def discover_tmux_sessions(
             buf = ""
             _step(bindings, ev)
             for tmux_session, b in list(bindings.items()):
-                if (
-                    tmux_session not in yielded
-                    and b.primary_session_id is not None
-                ):
+                if tmux_session not in yielded and b.primary_session_id is not None:
                     yielded.add(tmux_session)
                     yield TmuxBinding(
                         tmux_session=b.tmux_session,

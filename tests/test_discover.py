@@ -78,13 +78,16 @@ def test_single_session_start_yields_one_binding(tmp_path):
 
 def test_clear_chain_yields_only_last_primary(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1", ts="T1"),
-        _ev("session_end", "S1", payload={"reason": "clear"}, ts="T2"),
-        _ev("session_start", "S2", ts="T3"),
-        _ev("session_end", "S2", payload={"reason": "clear"}, ts="T4"),
-        _ev("session_start", "S3", ts="T5"),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", ts="T1"),
+            _ev("session_end", "S1", payload={"reason": "clear"}, ts="T2"),
+            _ev("session_start", "S2", ts="T3"),
+            _ev("session_end", "S2", payload={"reason": "clear"}, ts="T4"),
+            _ev("session_start", "S3", ts="T5"),
+        ],
+    )
     out = list_live_tmux_bindings(events_path=p)
     assert len(out) == 1
     assert out[0].primary_session_id == "S3"
@@ -93,10 +96,13 @@ def test_clear_chain_yields_only_last_primary(tmp_path):
 
 def test_prompt_input_exit_keeps_primary(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1", ts="T1"),
-        _ev("session_end", "S1", payload={"reason": "prompt_input_exit"}, ts="T2"),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", ts="T1"),
+            _ev("session_end", "S1", payload={"reason": "prompt_input_exit"}, ts="T2"),
+        ],
+    )
     out = list_live_tmux_bindings(events_path=p)
     assert len(out) == 1
     assert out[0].primary_session_id == "S1"
@@ -104,31 +110,40 @@ def test_prompt_input_exit_keeps_primary(tmp_path):
 
 def test_fatal_session_end_removes_binding(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1"),
-        _ev("session_end", "S1", payload={"reason": "error"}),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1"),
+            _ev("session_end", "S1", payload={"reason": "error"}),
+        ],
+    )
     assert list_live_tmux_bindings(events_path=p) == []
 
 
 def test_pane_id_follows_latest_event(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1", pane="%1"),
-        _ev("user_prompt_submit", "S1", pane="%2"),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", pane="%1"),
+            _ev("user_prompt_submit", "S1", pane="%2"),
+        ],
+    )
     out = list_live_tmux_bindings(events_path=p)
     assert out[0].pane_id == "%2"
 
 
 def test_subagent_does_not_override_primary(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1", ts="T1"),
-        _ev("pre_tool_use", "S1", payload={"tool_name": "Task"}, ts="T2"),
-        _ev("session_start", "SUB", ts="T3"),
-        _ev("session_end", "SUB", payload={"reason": "stop"}, ts="T4"),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", ts="T1"),
+            _ev("pre_tool_use", "S1", payload={"tool_name": "Task"}, ts="T2"),
+            _ev("session_start", "SUB", ts="T3"),
+            _ev("session_end", "SUB", payload={"reason": "stop"}, ts="T4"),
+        ],
+    )
     out = list_live_tmux_bindings(events_path=p)
     assert len(out) == 1
     assert out[0].primary_session_id == "S1"
@@ -136,10 +151,13 @@ def test_subagent_does_not_override_primary(tmp_path):
 
 def test_multiple_tmux_sessions_yield_separate_bindings(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1", tmux="ccmux"),
-        _ev("session_start", "S2", tmux="demo"),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", tmux="ccmux"),
+            _ev("session_start", "S2", tmux="demo"),
+        ],
+    )
     out = list_live_tmux_bindings(events_path=p)
     tmux_names = {b.tmux_session for b in out}
     assert tmux_names == {"ccmux", "demo"}
@@ -147,10 +165,13 @@ def test_multiple_tmux_sessions_yield_separate_bindings(tmp_path):
 
 def test_clear_with_no_rebind_excludes_binding(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1"),
-        _ev("session_end", "S1", payload={"reason": "clear"}),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1"),
+            _ev("session_end", "S1", payload={"reason": "clear"}),
+        ],
+    )
     assert list_live_tmux_bindings(events_path=p) == []
 
 
@@ -175,10 +196,13 @@ async def _drain(it, *, n: int, timeout: float = 2.0) -> list:
 @pytest.mark.asyncio
 async def test_discover_include_existing_yields_initial_snapshot(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1", tmux="A"),
-        _ev("session_start", "S2", tmux="B"),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", tmux="A"),
+            _ev("session_start", "S2", tmux="B"),
+        ],
+    )
     out = await _drain(
         discover_tmux_sessions(events_path=p, include_existing=True),
         n=2,
@@ -190,9 +214,12 @@ async def test_discover_include_existing_yields_initial_snapshot(tmp_path):
 @pytest.mark.asyncio
 async def test_discover_skips_existing_when_disabled(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1", tmux="A"),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", tmux="A"),
+        ],
+    )
     received = []
 
     async def collect():
@@ -212,9 +239,12 @@ async def test_discover_skips_existing_when_disabled(tmp_path):
 @pytest.mark.asyncio
 async def test_discover_does_not_yield_same_tmux_twice(tmp_path):
     p = tmp_path / "events.jsonl"
-    _write_events(p, [
-        _ev("session_start", "S1", tmux="A"),
-    ])
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", tmux="A"),
+        ],
+    )
     out = await _drain(
         discover_tmux_sessions(events_path=p, include_existing=True),
         n=1,

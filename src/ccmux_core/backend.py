@@ -24,9 +24,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ccmux_spinner import Activity, PaneCaptureError, SpinnerMonitor
 from claude_tap import ClaudeMessage, EventStream, MessageStream
 from claude_tap.config import events_path as _default_events_path
-from ccmux_spinner import Activity, PaneCaptureError, SpinnerMonitor
 
 from . import config
 from .state import Dead, State, Working
@@ -108,7 +108,7 @@ class Backend:
         self._on_live_task: asyncio.Task | None = None
         self._fallback_task: asyncio.Task | None = None
 
-    async def __aenter__(self) -> "Backend":
+    async def __aenter__(self) -> Backend:
         self._subscribe_unix = time.time()
         self._event_task = asyncio.create_task(self._event_consumer())
         self._on_live_task = asyncio.create_task(self._on_live_phase_entered())
@@ -119,7 +119,7 @@ class Backend:
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
-        tb: "TracebackType | None",
+        tb: TracebackType | None,
     ) -> None:
         self._stopped.set()
         for t in (
@@ -310,10 +310,16 @@ class Backend:
         try:
             result = subprocess.run(
                 [
-                    "tmux", "list-panes", "-t", self._tmux_session,
-                    "-F", "#{pane_current_command}",
+                    "tmux",
+                    "list-panes",
+                    "-t",
+                    self._tmux_session,
+                    "-F",
+                    "#{pane_current_command}",
                 ],
-                capture_output=True, text=True, check=False,
+                capture_output=True,
+                text=True,
+                check=False,
             )
         except FileNotFoundError:
             return False

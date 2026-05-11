@@ -17,7 +17,13 @@ from .state import Blocked, Dead, Idle, State, Working
 def _bindings_table(bindings: list[TmuxBinding]) -> str:
     if not bindings:
         return "(no live tmux sessions)"
-    headers = ["TMUX_SESSION", "PANE_ID", "WINDOW_ID", "PRIMARY_SESSION_ID", "LAST_EVENT"]
+    headers = [
+        "TMUX_SESSION",
+        "PANE_ID",
+        "WINDOW_ID",
+        "PRIMARY_SESSION_ID",
+        "LAST_EVENT",
+    ]
     rows = [
         [
             b.tmux_session,
@@ -28,12 +34,10 @@ def _bindings_table(bindings: list[TmuxBinding]) -> str:
         ]
         for b in bindings
     ]
-    widths = [
-        max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)
-    ]
-    lines = ["  ".join(h.ljust(w) for h, w in zip(headers, widths))]
+    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
+    lines = ["  ".join(h.ljust(w) for h, w in zip(headers, widths, strict=True))]
     for r in rows:
-        lines.append("  ".join(c.ljust(w) for c, w in zip(r, widths)))
+        lines.append("  ".join(c.ljust(w) for c, w in zip(r, widths, strict=True)))
     return "\n".join(lines)
 
 
@@ -43,18 +47,22 @@ def _state_to_json(state: State) -> str:
     if isinstance(state, Working):
         return json.dumps({"type": "Working", "tool_name": state.tool_name})
     if isinstance(state, Blocked):
-        return json.dumps({
-            "type": "Blocked",
-            "kind": state.kind,
-            "tool_name": state.tool_name,
-            "tool_input": state.tool_input,
-        })
+        return json.dumps(
+            {
+                "type": "Blocked",
+                "kind": state.kind,
+                "tool_name": state.tool_name,
+                "tool_input": state.tool_input,
+            }
+        )
     if isinstance(state, Dead):
-        return json.dumps({
-            "type": "Dead",
-            "reason": state.reason,
-            "detail": state.detail,
-        })
+        return json.dumps(
+            {
+                "type": "Dead",
+                "reason": state.reason,
+                "detail": state.detail,
+            }
+        )
     return json.dumps({"type": "Unknown"})
 
 

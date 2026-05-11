@@ -34,15 +34,17 @@ def test_bindings_table_empty():
 
 
 def test_bindings_table_single():
-    out = _bindings_table([
-        TmuxBinding(
-            tmux_session="ccmux",
-            pane_id="%42",
-            window_id="@0",
-            primary_session_id="abc-12345",
-            last_event_at="2026-05-11T01:55:42Z",
-        )
-    ])
+    out = _bindings_table(
+        [
+            TmuxBinding(
+                tmux_session="ccmux",
+                pane_id="%42",
+                window_id="@0",
+                primary_session_id="abc-12345",
+                last_event_at="2026-05-11T01:55:42Z",
+            )
+        ]
+    )
     assert "ccmux" in out
     assert "%42" in out
     assert "abc-12345" in out
@@ -59,9 +61,11 @@ def test_state_to_json_working():
 
 
 def test_state_to_json_blocked():
-    s = json.loads(_state_to_json(
-        Blocked(kind="permission", tool_name="Bash", tool_input={"x": 1})
-    ))
+    s = json.loads(
+        _state_to_json(
+            Blocked(kind="permission", tool_name="Bash", tool_input={"x": 1})
+        )
+    )
     assert s == {
         "type": "Blocked",
         "kind": "permission",
