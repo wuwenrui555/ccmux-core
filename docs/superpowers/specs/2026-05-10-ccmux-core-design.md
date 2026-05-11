@@ -525,13 +525,21 @@ table above).
 
 | Trigger | When applicable | Resulting state |
 |---|---|---|
-| `SpinnerMonitor` yields `None` or `IdleDecoration` continuously for ≥ `spinner_grace` seconds | current state is `Working` | `Idle(reason="interrupted")` |
+| `SpinnerMonitor` has yielded a non-`Spinner` activity (`None` or `IdleDecoration`) that has remained current for ≥ `spinner_grace` seconds, with no subsequent `Spinner` emit cancelling it | current state is `Working` and at least one `Spinner` has been observed | `Idle(reason="interrupted")` |
 | `SpinnerMonitor` raises `PaneCaptureError` | current state is not `Dead` | `Dead(reason="pane_lost")` |
 | Process probe (every `process_probe_interval` s, after `process_probe_startup_grace` s startup hold-off) finds no `claude_proc_names` in any pane of the tmux session | current state is not `Dead` | `Dead(reason="process_gone")` |
 
-The grace timer is reset whenever `SpinnerMonitor` yields a
-`Spinner` (with `…`), and whenever any hook event triggers a state
-transition. It only ticks while state is `Working`.
+The grace timer keys on an **explicit observed transition** from
+`Spinner` to non-`Spinner`, not on Spinner-emit silence.
+`SpinnerMonitor` only emits on text change, so a spinner that
+shows constant text for tens of seconds produces no emits even
+though the pane has a live spinner; relying on emit silence
+produces false positives. The first non-`Spinner` emit starts the
+timer; any subsequent `Spinner` emit cancels it. Once the timer
+exceeds `spinner_grace`, the grace transition fires. The very
+first emit observed by the Backend is ignored if it is a
+non-`Spinner` (cold start on a pane without a spinner does not
+arm the timer until a Spinner has been seen at least once).
 
 ### Emission rules
 
