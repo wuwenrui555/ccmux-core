@@ -4,7 +4,7 @@
 
 **Goal:** Build the ccmux-core v0.1 composition layer per `docs/superpowers/specs/2026-05-10-ccmux-core-design.md`: a per-tmux-session `Backend` async-context-manager that wraps `claude-tap`'s `EventStream`/`MessageStream` and `ccmux-spinner`'s `SpinnerMonitor` into four typed async iterators (`states / events / messages / spinners`), plus discovery helpers `list_live_tmux_bindings` and `discover_tmux_sessions`, plus a debug CLI.
 
-**Architecture:** New repo `ccmux-core/`. Module layout: `errors.py / state.py / state_machine.py / config.py / discover.py / backend.py / cli.py / __init__.py`. Pure functions where possible (state machine, list_live_tmux_bindings). Backend orchestrates 5 concurrent asyncio tasks with a replay→live phase boundary.
+**Architecture:** New repo `ccmux-core/`. Module layout: `error.py / state.py / state_machine.py / config.py / discover.py / backend.py / cli.py / __init__.py`. Pure functions where possible (state machine, list_live_tmux_bindings). Backend orchestrates 5 concurrent asyncio tasks with a replay→live phase boundary.
 
 **Tech Stack:** Python 3.11+, `claude-tap >= 0.2.0`, `ccmux-spinner >= 0.2.0`, pytest (with pytest-asyncio), ruff. No other runtime deps.
 
@@ -21,7 +21,7 @@
 | `.gitignore` | Create | match siblings |
 | `src/ccmux_core/__init__.py` | Create | public re-exports |
 | `src/ccmux_core/_version.py` | Create | `__version__ = "0.1.0"` |
-| `src/ccmux_core/errors.py` | Create | exception types |
+| `src/ccmux_core/error.py` | Create | exception types |
 | `src/ccmux_core/state.py` | Create | Idle / Working / Blocked / Dead frozen dataclasses + State union |
 | `src/ccmux_core/state_machine.py` | Create | pure transition functions |
 | `src/ccmux_core/config.py` | Create | env var getters + settings.env loader |
@@ -245,11 +245,11 @@ Expected: now on `feat/v0.1.0-initial`.
 
 ---
 
-### Task 2: `_version.py` + `errors.py` + smoke test
+### Task 2: `_version.py` + `error.py` + smoke test
 
 **Files:**
 - Create: `src/ccmux_core/_version.py`
-- Create: `src/ccmux_core/errors.py`
+- Create: `src/ccmux_core/error.py`
 - Create: `src/ccmux_core/__init__.py` (minimal first)
 - Create: `tests/test_skeleton.py`
 
@@ -286,7 +286,7 @@ Create `src/ccmux_core/_version.py`:
 __version__ = "0.1.0"
 ```
 
-Create `src/ccmux_core/errors.py`:
+Create `src/ccmux_core/error.py`:
 ```python
 """Exception types for ccmux-core."""
 

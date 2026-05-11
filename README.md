@@ -39,6 +39,96 @@ async def main():
 asyncio.run(main())
 ```
 
+## Configuration
+
+ccmux-core's runtime behavior is tuneable via environment variables,
+all under the `CCMUX_CORE_*` namespace, all in
+`~/.ccmux-core/settings.env`. Knobs that belong conceptually to
+upstream libraries (claude-tap, ccmux-spinner) are exposed as
+**facade aliases** under the same namespace; ccmux-core mirrors them
+to the corresponding upstream env var at import time so the
+upstream libraries pick the values up.
+
+### Native ccmux-core knobs
+
+| Knob | Default | Effect |
+|---|---|---|
+| `CCMUX_CORE_DIR` | `~/.ccmux-core` | Where ccmux-core's `settings.env` is loaded from. |
+| `CCMUX_CORE_SPINNER_GRACE` | `3` | Seconds Working with a non-Spinner observation before falling back to `Idle(interrupted)`. |
+| `CCMUX_CORE_PROCESS_PROBE_INTERVAL` | `10` | Seconds between `tmux list-panes` probes. |
+| `CCMUX_CORE_PROCESS_PROBE_STARTUP_GRACE` | `10` | Seconds after Backend start during which no process probe runs. |
+| `CCMUX_CORE_CLAUDE_PROC_NAMES` | `claude,node` | Foreground process names that count as "claude is alive". |
+| `CCMUX_CORE_PRETTY_WIDTH` | `100` | Visual width (cells) of `ccmux-core watch` pretty-mode blocks. |
+
+### Facade aliases (mirrored to upstream)
+
+| Alias | → Upstream var | Effect |
+|---|---|---|
+| `CCMUX_CORE_HOOK_POLL_INTERVAL` | `CLAUDE_TAP_POLL_INTERVAL` (default `0.1`) | `events.jsonl` tail cadence; affects hook-event visibility latency. |
+| `CCMUX_CORE_HOOK_POLL_MAX_DURATION` | `CLAUDE_TAP_POLL_MAX_DURATION` (default `30`) | Max seconds the scoped post-tool-use polling task runs. Raise for long generations where mid-turn text would otherwise be delayed. |
+| `CCMUX_CORE_SPINNER_POLL_INTERVAL` | `CCMUX_SPINNER_POLL_INTERVAL` (default `0.5`) | tmux pane capture cadence; affects spinner detection latency. |
+
+#### Scope: what "mirroring" means
+
+"Mirroring" happens **inside the ccmux-core process's memory**
+(`os.environ`) when the package imports — it's not a write to any
+upstream `settings.env` file and it does not affect other processes.
+
+| Process | Reads `~/.ccmux-core/settings.env`? | Affected by `CCMUX_CORE_*` aliases? |
+|---|---|---|
+| `ccmux-core watch` / `list` / `version` | yes | yes — alias mirrors to upstream env vars **inside this process** |
+| `claude-tap watch-messages` (standalone) | **no** | no — it reads only `~/.claude-tap/settings.env` |
+| `ccmux-spinner watch` (standalone) | **no** | no — it reads only `~/.ccmux-spinner/settings.env` |
+| Other consumers that embed claude-tap or ccmux-spinner without importing ccmux-core | **no** | no |
+
+So setting `CCMUX_CORE_SPINNER_POLL_INTERVAL=0.2` in
+`~/.ccmux-core/settings.env`:
+
+- ✅ Speeds up pane capture inside `ccmux-core watch` to 0.2 s.
+- ❌ Does **not** speed up pane capture if you run `ccmux-spinner watch` directly.
+- ❌ Does **not** modify `~/.ccmux-spinner/settings.env` on disk.
+
+Cleanly summarized: ccmux-core's settings.env tunes "the ccmux-core
+tool"; upstream packages' settings.env files tune their own standalone
+behavior. The facade aliases let you express both ccmux-core's
+preferred upstream values **and** ccmux-core's own knobs in one
+file, without cross-contaminating other tools.
+
+### Resolution priority (highest first)
+
+1. **Shell-exported env var** (e.g. `export CCMUX_CORE_SPINNER_GRACE=2`).
+2. **`./settings.env`** in the current working directory (project-local).
+3. **`~/.ccmux-core/settings.env`** (global per user).
+4. **Upstream package's own `settings.env`** (`~/.claude-tap/settings.env`,
+   `~/.ccmux-spinner/settings.env`) — applies only to the upstream-aliased
+   knobs, and only when ccmux-core's facade alias is not set.
+5. **Upstream package default**.
+
+### Example
+
+```bash
+# ~/.ccmux-core/settings.env  ← one file, all ccmux-core tuning
+CCMUX_CORE_PRETTY_WIDTH=80
+CCMUX_CORE_HOOK_POLL_MAX_DURATION=600   # → CLAUDE_TAP_POLL_MAX_DURATION
+```
+
+The user's `~/.claude-tap/settings.env` and `~/.ccmux-spinner/settings.env`
+files are then only relevant for those tools' standalone use
+(`claude-tap watch-messages` etc.). When working through ccmux-core,
+the facade aliases above are the single source of truth.
+
+### Knobs not exposed
+
+These exist in upstream packages but have no effect when used through
+ccmux-core, so no facade alias is provided:
+
+- `CLAUDE_TAP_PRETTY_WIDTH` (only used by `claude-tap watch-messages`)
+- `CCMUX_SPINNER_PRETTY_WIDTH` (only used by `ccmux-spinner watch`)
+- `CLAUDE_TAP_DECISION_TIMEOUT` (permission-request decision sockets;
+  ccmux-core does not consume them)
+- `CLAUDE_TAP_DIR` / `CCMUX_SPINNER_DIR` (plumbing-level; usually fixed
+  per install)
+
 ## License
 
 Apache 2.0.

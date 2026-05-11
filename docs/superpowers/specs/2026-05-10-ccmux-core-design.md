@@ -214,7 +214,7 @@ src/ccmux_core/
                         methods, all internal tasks
   discover.py        — TmuxBinding dataclass, list_live_tmux_bindings(),
                         discover_tmux_sessions()
-  errors.py          — exception types
+  error.py          — exception types
   cli.py             — `ccmux-core list` and `ccmux-core watch <tmux>` subcommands
 
 tests/
@@ -525,13 +525,21 @@ table above).
 
 | Trigger | When applicable | Resulting state |
 |---|---|---|
-| `SpinnerMonitor` yields `None` or `IdleDecoration` continuously for ≥ `spinner_grace` seconds | current state is `Working` | `Idle(reason="interrupted")` |
+| `SpinnerMonitor` has yielded a non-`Spinner` activity (`None` or `IdleDecoration`) that has remained current for ≥ `spinner_grace` seconds, with no subsequent `Spinner` emit cancelling it | current state is `Working` and at least one `Spinner` has been observed | `Idle(reason="interrupted")` |
 | `SpinnerMonitor` raises `PaneCaptureError` | current state is not `Dead` | `Dead(reason="pane_lost")` |
 | Process probe (every `process_probe_interval` s, after `process_probe_startup_grace` s startup hold-off) finds no `claude_proc_names` in any pane of the tmux session | current state is not `Dead` | `Dead(reason="process_gone")` |
 
-The grace timer is reset whenever `SpinnerMonitor` yields a
-`Spinner` (with `…`), and whenever any hook event triggers a state
-transition. It only ticks while state is `Working`.
+The grace timer keys on an **explicit observed transition** from
+`Spinner` to non-`Spinner`, not on Spinner-emit silence.
+`SpinnerMonitor` only emits on text change, so a spinner that
+shows constant text for tens of seconds produces no emits even
+though the pane has a live spinner; relying on emit silence
+produces false positives. The first non-`Spinner` emit starts the
+timer; any subsequent `Spinner` emit cancels it. Once the timer
+exceeds `spinner_grace`, the grace transition fires. The very
+first emit observed by the Backend is ignored if it is a
+non-`Spinner` (cold start on a pane without a spinner does not
+arm the timer until a Spinner has been seen at least once).
 
 ### Emission rules
 
@@ -745,14 +753,16 @@ pattern. Settings lookup order:
 | Env var | Default | Meaning |
 |---|---|---|
 | `CCMUX_CORE_DIR` | `~/.ccmux-core` | State directory; `settings.env` loaded from here. |
-| `CCMUX_CORE_SPINNER_GRACE` | `5` | Seconds Working without a Spinner before falling back to `Idle(interrupted)`. |
+| `CCMUX_CORE_SPINNER_GRACE` | `3` | Seconds Working with an observed non-Spinner activity staying current before falling back to `Idle(interrupted)`. |
 | `CCMUX_CORE_PROCESS_PROBE_INTERVAL` | `10` | Seconds between successive process probes. |
 | `CCMUX_CORE_PROCESS_PROBE_STARTUP_GRACE` | `10` | Seconds after Backend `__aenter__` during which no process probe runs (avoids false-positives during claude boot). |
 | `CCMUX_CORE_CLAUDE_PROC_NAMES` | `claude,node` | Comma-separated set of foreground process names that count as "claude is alive". |
+| `CCMUX_CORE_PRETTY_WIDTH` | `100` | Visual cell width for `ccmux-core watch` pretty mode (separator + body trim cap). Independent of `CLAUDE_TAP_PRETTY_WIDTH`. |
 
 Upstream env vars (`CLAUDE_TAP_POLL_INTERVAL`,
-`CCMUX_SPINNER_POLL_INTERVAL`, etc.) are read by the upstream
-libraries directly; ccmux-core does not proxy them.
+`CCMUX_SPINNER_POLL_INTERVAL`, `CLAUDE_TAP_PRETTY_WIDTH`, etc.) are
+read by the upstream libraries directly; ccmux-core does not proxy
+them.
 
 ## Dependencies
 
@@ -877,7 +887,7 @@ Standard git-flow with the existing CCMUX conventions:
    workflows from existing siblings).
 2. Branch `feat/v0.1.0-initial` off `main` (or `dev` once dev
    exists).
-3. Implement modules in order: `errors.py` → `state.py` →
+3. Implement modules in order: `error.py` → `state.py` →
    `state_machine.py` → `discover.py` → `config.py` → `backend.py`
    → `cli.py` → `__init__.py`. Tests alongside each module.
 4. Open PR; verify CI green (ruff / pyright / pytest).
