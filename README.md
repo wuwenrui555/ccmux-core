@@ -68,6 +68,32 @@ upstream libraries pick the values up.
 | `CCMUX_CORE_HOOK_POLL_MAX_DURATION` | `CLAUDE_TAP_POLL_MAX_DURATION` (default `30`) | Max seconds the scoped post-tool-use polling task runs. Raise for long generations where mid-turn text would otherwise be delayed. |
 | `CCMUX_CORE_SPINNER_POLL_INTERVAL` | `CCMUX_SPINNER_POLL_INTERVAL` (default `0.5`) | tmux pane capture cadence; affects spinner detection latency. |
 
+#### Scope: what "mirroring" means
+
+"Mirroring" happens **inside the ccmux-core process's memory**
+(`os.environ`) when the package imports — it's not a write to any
+upstream `settings.env` file and it does not affect other processes.
+
+| Process | Reads `~/.ccmux-core/settings.env`? | Affected by `CCMUX_CORE_*` aliases? |
+|---|---|---|
+| `ccmux-core watch` / `list` / `version` | yes | yes — alias mirrors to upstream env vars **inside this process** |
+| `claude-tap watch-messages` (standalone) | **no** | no — it reads only `~/.claude-tap/settings.env` |
+| `ccmux-spinner watch` (standalone) | **no** | no — it reads only `~/.ccmux-spinner/settings.env` |
+| Other consumers that embed claude-tap or ccmux-spinner without importing ccmux-core | **no** | no |
+
+So setting `CCMUX_CORE_SPINNER_POLL_INTERVAL=0.2` in
+`~/.ccmux-core/settings.env`:
+
+- ✅ Speeds up pane capture inside `ccmux-core watch` to 0.2 s.
+- ❌ Does **not** speed up pane capture if you run `ccmux-spinner watch` directly.
+- ❌ Does **not** modify `~/.ccmux-spinner/settings.env` on disk.
+
+Cleanly summarized: ccmux-core's settings.env tunes "the ccmux-core
+tool"; upstream packages' settings.env files tune their own standalone
+behavior. The facade aliases let you express both ccmux-core's
+preferred upstream values **and** ccmux-core's own knobs in one
+file, without cross-contaminating other tools.
+
 ### Resolution priority (highest first)
 
 1. **Shell-exported env var** (e.g. `export CCMUX_CORE_SPINNER_GRACE=2`).
