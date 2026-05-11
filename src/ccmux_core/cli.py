@@ -236,6 +236,12 @@ def _message_label(msg) -> str:
         parts.append(msg.content_type)
     if msg.tool_name:
         parts.append(msg.tool_name)
+    # Surface claude-tap's `source` field (v0.2.1+) so a viewer can
+    # see at a glance whether an assistant text is a final reply
+    # (source="hook") or mid-turn narration (source="transcript").
+    src = getattr(msg, "source", None)
+    if src:
+        parts.append(src)
     return " · ".join(parts)
 
 

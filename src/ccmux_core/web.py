@@ -222,6 +222,9 @@ def _message_label_body(msg) -> tuple[str, str, str]:
         parts.append(msg.content_type)
     if msg.tool_name:
         parts.append(msg.tool_name)
+    src = getattr(msg, "source", None)
+    if src:
+        parts.append(src)
     label = " · ".join(parts)
     body = json.dumps(msg.text or "", ensure_ascii=False)[1:-1]
     if msg.image_data:
