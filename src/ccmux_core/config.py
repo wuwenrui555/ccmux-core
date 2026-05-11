@@ -25,6 +25,27 @@ Recognized settings:
   and the body trim cap (default 100). Independent of
   ``CLAUDE_TAP_PRETTY_WIDTH`` so a narrow split-pane viewer can
   shrink ccmux-core without affecting other tools.
+
+Upstream-aliased settings (facade pattern):
+
+The following ``CCMUX_CORE_*`` keys are not consumed by ccmux-core
+directly. Setting them (in this file or as shell exports) mirrors
+the value into the corresponding upstream env var via
+``setdefault`` so ``claude-tap`` / ``ccmux-spinner`` read it as
+their own. This lets users tune the whole stack from one
+namespace + one settings file.
+
+* ``CCMUX_CORE_HOOK_POLL_INTERVAL`` →
+  ``CLAUDE_TAP_POLL_INTERVAL`` (events.jsonl tail cadence).
+* ``CCMUX_CORE_HOOK_POLL_MAX_DURATION`` →
+  ``CLAUDE_TAP_POLL_MAX_DURATION`` (mid-turn scoped polling
+  lifetime; raise for long generations where mid-turn text would
+  otherwise be delayed).
+* ``CCMUX_CORE_SPINNER_POLL_INTERVAL`` →
+  ``CCMUX_SPINNER_POLL_INTERVAL`` (tmux pane capture cadence).
+
+Priority (highest first): shell export > ccmux-core alias >
+upstream package's own settings.env > upstream default.
 """
 
 from __future__ import annotations
@@ -43,6 +64,17 @@ DEFAULT_PRETTY_WIDTH = 100
 _SETTINGS_ENV_FILENAME = "settings.env"
 _LOADED_SETTINGS_FROM: list[Path] = []
 _KEY_VALUE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
+
+# CCMUX_CORE_* facade aliases for upstream env vars. The settings.env
+# loader mirrors the user's CCMUX_CORE_X value into the corresponding
+# upstream env var (via ``os.environ.setdefault``) so claude-tap and
+# ccmux-spinner pick it up at their own read sites. ccmux-core itself
+# never reads the LHS keys — they exist purely as a user-facing facade.
+_UPSTREAM_ALIASES: dict[str, str] = {
+    "CCMUX_CORE_HOOK_POLL_INTERVAL": "CLAUDE_TAP_POLL_INTERVAL",
+    "CCMUX_CORE_HOOK_POLL_MAX_DURATION": "CLAUDE_TAP_POLL_MAX_DURATION",
+    "CCMUX_CORE_SPINNER_POLL_INTERVAL": "CCMUX_SPINNER_POLL_INTERVAL",
+}
 
 
 def ccmux_core_dir() -> Path:
@@ -136,6 +168,10 @@ def _load_settings_env_files() -> None:
     ``setdefault``):
       1. ``./settings.env`` (cwd)
       2. ``$CCMUX_CORE_DIR/settings.env`` (global)
+
+    After loading the files, :func:`_mirror_upstream_aliases` runs so
+    facade keys (``CCMUX_CORE_HOOK_*`` etc.) propagate to the upstream
+    env vars (``CLAUDE_TAP_*`` / ``CCMUX_SPINNER_*``).
     """
     paths = [Path(_SETTINGS_ENV_FILENAME), settings_env_path()]
     for path in paths:
@@ -150,6 +186,27 @@ def _load_settings_env_files() -> None:
         for key, val in values.items():
             os.environ.setdefault(key, val)
         _LOADED_SETTINGS_FROM.append(path)
+    _mirror_upstream_aliases()
+
+
+def _mirror_upstream_aliases() -> None:
+    """For each ``CCMUX_CORE_*`` facade alias currently set in
+    ``os.environ``, setdefault the corresponding upstream env var.
+
+    Called by :func:`_load_settings_env_files` after the file load
+    pass so that a value set via shell export *or* via ccmux-core's
+    settings.env reaches claude-tap / ccmux-spinner at their next
+    read. ``setdefault`` keeps shell-exported upstream values (e.g.
+    a directly-exported ``CLAUDE_TAP_POLL_INTERVAL``) intact.
+
+    Must run before claude-tap and ccmux-spinner's own settings.env
+    loaders fire — see ``ccmux_core.__init__`` for the import-order
+    contract.
+    """
+    for alias_key, upstream_key in _UPSTREAM_ALIASES.items():
+        value = os.environ.get(alias_key)
+        if value is not None:
+            os.environ.setdefault(upstream_key, value)
 
 
 _load_settings_env_files()

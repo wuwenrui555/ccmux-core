@@ -86,3 +86,70 @@ def test_pretty_width_invalid_falls_back(isolated_core_dir, monkeypatch):
 def test_pretty_width_zero_falls_back(isolated_core_dir, monkeypatch):
     monkeypatch.setenv("CCMUX_CORE_PRETTY_WIDTH", "0")
     assert config.pretty_width() == 100
+
+
+# ---------------------------------------------------------------------------
+# Facade aliases (CCMUX_CORE_HOOK_* → CLAUDE_TAP_*, etc.)
+# ---------------------------------------------------------------------------
+
+
+def test_alias_hook_poll_interval_mirrors_to_claude_tap(
+    isolated_core_dir, monkeypatch
+):
+    monkeypatch.setenv("CCMUX_CORE_HOOK_POLL_INTERVAL", "0.25")
+    config._mirror_upstream_aliases()
+    import os
+
+    assert os.environ.get("CLAUDE_TAP_POLL_INTERVAL") == "0.25"
+
+
+def test_alias_hook_poll_max_duration_mirrors(isolated_core_dir, monkeypatch):
+    monkeypatch.setenv("CCMUX_CORE_HOOK_POLL_MAX_DURATION", "600")
+    config._mirror_upstream_aliases()
+    import os
+
+    assert os.environ.get("CLAUDE_TAP_POLL_MAX_DURATION") == "600"
+
+
+def test_alias_spinner_poll_interval_mirrors(isolated_core_dir, monkeypatch):
+    monkeypatch.setenv("CCMUX_CORE_SPINNER_POLL_INTERVAL", "0.2")
+    config._mirror_upstream_aliases()
+    import os
+
+    assert os.environ.get("CCMUX_SPINNER_POLL_INTERVAL") == "0.2"
+
+
+def test_alias_does_not_override_existing_upstream(isolated_core_dir, monkeypatch):
+    """A pre-existing upstream env var (e.g. shell-exported
+    CLAUDE_TAP_POLL_INTERVAL) must NOT be overridden by the alias —
+    setdefault is the mechanism."""
+    monkeypatch.setenv("CLAUDE_TAP_POLL_INTERVAL", "0.05")  # shell export
+    monkeypatch.setenv("CCMUX_CORE_HOOK_POLL_INTERVAL", "0.5")  # core alias
+    config._mirror_upstream_aliases()
+    import os
+
+    # Shell export wins (setdefault is no-op on existing).
+    assert os.environ.get("CLAUDE_TAP_POLL_INTERVAL") == "0.05"
+
+
+def test_alias_unset_does_nothing(isolated_core_dir, monkeypatch):
+    """No CCMUX_CORE_* alias set → no mirror happens."""
+    # All aliases cleared by isolated_core_dir fixture.
+    config._mirror_upstream_aliases()
+    import os
+
+    assert "CLAUDE_TAP_POLL_INTERVAL" not in os.environ
+    assert "CLAUDE_TAP_POLL_MAX_DURATION" not in os.environ
+    assert "CCMUX_SPINNER_POLL_INTERVAL" not in os.environ
+
+
+def test_alias_from_settings_env_file(isolated_core_dir, monkeypatch):
+    """CCMUX_CORE_HOOK_* keys in the settings.env file mirror to upstream."""
+    settings = isolated_core_dir / "settings.env"
+    settings.write_text("CCMUX_CORE_HOOK_POLL_MAX_DURATION=900\n")
+    config._LOADED_SETTINGS_FROM.clear()
+    config._load_settings_env_files()
+    import os
+
+    assert os.environ.get("CCMUX_CORE_HOOK_POLL_MAX_DURATION") == "900"
+    assert os.environ.get("CLAUDE_TAP_POLL_MAX_DURATION") == "900"
