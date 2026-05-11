@@ -250,6 +250,23 @@ def _message_body(msg) -> str:
     return body
 
 
+def _overwrite_prefix(
+    *,
+    is_spinner_now: bool,
+    last_was_spinner: bool,
+    can_overwrite: bool,
+    last_block_lines: int,
+) -> str:
+    """Return the ANSI prefix (or empty) that moves the cursor up and
+    clears the previous spinner block when the next emit is also a
+    spinner. Extracted from the inner loop in ``_watch_async`` so it
+    can be unit-tested without spawning a Backend.
+    """
+    if is_spinner_now and last_was_spinner and can_overwrite:
+        return f"\x1b[{last_block_lines}A\x1b[J"
+    return ""
+
+
 def _spinner_label(activity) -> str:
     if activity is None:
         return "SPINNER · none"
@@ -310,21 +327,54 @@ async def _watch_async(session: str, pretty: bool) -> int:
         "window_id": match.window_id,
         "primary_sid": match.primary_session_id,
         "latest_spinner_text": None,  # type: str | None
+        # In-place spinner-refresh state. ``last_emit_was_spinner`` is
+        # True when the most recent pretty block printed was a SPINNER
+        # block; ``spinner_block_lines`` is its line count (including
+        # the trailing blank). When the next emit is also a SPINNER
+        # and stdout is a tty, we move the cursor up and overwrite
+        # instead of appending — so consecutive spinner ticks look like
+        # one updating block rather than a wall of duplicates.
+        "last_emit_was_spinner": False,
+        "spinner_block_lines": 0,
     }
 
-    def _emit_pretty(label: str, body: str, ts: str | None) -> None:
-        print(
-            _pretty_block(
-                label=label,
-                body=body,
-                ts=_ts_short(ts),
-                tmux_session=ctx["tmux_session"],
-                window_id=ctx["window_id"],
-                primary_sid=ctx["primary_sid"],
-            ),
-            flush=True,
+    can_overwrite = pretty and sys.stdout.isatty()
+
+    def _emit_pretty(
+        label: str, body: str, ts: str | None, is_spinner: bool = False
+    ) -> None:
+        block = _pretty_block(
+            label=label,
+            body=body,
+            ts=_ts_short(ts),
+            tmux_session=ctx["tmux_session"],
+            window_id=ctx["window_id"],
+            primary_sid=ctx["primary_sid"],
         )
+        # Block is N text lines joined by \n, then we append a blank
+        # line. Total occupied terminal lines = N + 1.
+        block_lines = block.count("\n") + 1 + 1
+
+        # Overwrite the previous spinner block in place when this emit
+        # is also a spinner. Anything else (state / event / message)
+        # breaks the run and appends normally, resetting the marker.
+        prefix = _overwrite_prefix(
+            is_spinner_now=is_spinner,
+            last_was_spinner=ctx["last_emit_was_spinner"],
+            can_overwrite=can_overwrite,
+            last_block_lines=ctx["spinner_block_lines"],
+        )
+        if prefix:
+            sys.stdout.write(prefix)
+
+        print(block, flush=True)
         print(flush=True)
+
+        if is_spinner:
+            ctx["last_emit_was_spinner"] = True
+            ctx["spinner_block_lines"] = block_lines
+        else:
+            ctx["last_emit_was_spinner"] = False
 
     async with Backend(tmux_session=session, pane_id=match.pane_id) as b:
 
@@ -393,6 +443,7 @@ async def _watch_async(session: str, pretty: bool) -> int:
                         _spinner_label(a),
                         _spinner_body(a),
                         ts=None,
+                        is_spinner=True,
                     )
                 else:
                     if a is None:

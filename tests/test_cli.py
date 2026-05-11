@@ -9,6 +9,7 @@ from ccmux_core.cli import (
     _event_body,
     _event_label,
     _header,
+    _overwrite_prefix,
     _state_body,
     _state_label,
     _state_to_json,
@@ -158,3 +159,62 @@ def test_header_layout():
         label="WORKING",
     )
     assert out == "[ 03:38:08 ccmux@80 504921bb ] WORKING"
+
+
+# ---------------------------------------------------------------------------
+# In-place spinner overwrite
+# ---------------------------------------------------------------------------
+
+
+def test_overwrite_prefix_first_spinner_does_not_overwrite():
+    out = _overwrite_prefix(
+        is_spinner_now=True,
+        last_was_spinner=False,
+        can_overwrite=True,
+        last_block_lines=4,
+    )
+    assert out == ""
+
+
+def test_overwrite_prefix_consecutive_spinner_overwrites():
+    out = _overwrite_prefix(
+        is_spinner_now=True,
+        last_was_spinner=True,
+        can_overwrite=True,
+        last_block_lines=4,
+    )
+    assert out == "\x1b[4A\x1b[J"
+
+
+def test_overwrite_prefix_non_spinner_does_not_overwrite():
+    # STATE arrives after a spinner: never overwrites.
+    out = _overwrite_prefix(
+        is_spinner_now=False,
+        last_was_spinner=True,
+        can_overwrite=True,
+        last_block_lines=4,
+    )
+    assert out == ""
+
+
+def test_overwrite_prefix_disabled_when_not_a_tty():
+    # When stdout is piped, can_overwrite is False; never overwrites
+    # so consumers downstream (e.g., file output, jq) see clean
+    # consecutive blocks.
+    out = _overwrite_prefix(
+        is_spinner_now=True,
+        last_was_spinner=True,
+        can_overwrite=False,
+        last_block_lines=4,
+    )
+    assert out == ""
+
+
+def test_overwrite_prefix_uses_last_block_line_count():
+    out = _overwrite_prefix(
+        is_spinner_now=True,
+        last_was_spinner=True,
+        can_overwrite=True,
+        last_block_lines=7,
+    )
+    assert "\x1b[7A" in out
