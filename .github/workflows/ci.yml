@@ -23,6 +23,14 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # Upstream sibling packages are not on PyPI yet; install from
+      # git tags. tool.uv.sources points to local paths for dev, but
+      # those paths don't exist in CI — pip needs explicit git URLs.
+      - name: Install upstream packages from git tags
+        run: |
+          pip install git+https://github.com/wuwenrui555/claude-tap.git@v0.2.1
+          pip install git+https://github.com/wuwenrui555/ccmux-spinner.git@v0.2.1
+
       - name: Install package + dev deps
         run: pip install -e '.[dev]'
 
