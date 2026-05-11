@@ -89,7 +89,14 @@ class Backend:
         self._state: State | None = None
         self._primary: str | None = None
         self._known_session_ids: frozenset[str] = frozenset()
-        self._last_spinner_active_at: float | None = None
+        # When SpinnerMonitor most recently emitted a None / IdleDecoration
+        # (i.e. "no spinner") observation. None while a Spinner is the
+        # latest activity. Used by the grace timer: a Spinner with
+        # unchanged text triggers no SpinnerMonitor emit at all, so we
+        # cannot infer "spinner absent" from emit silence — we have to
+        # wait for an explicit non-Spinner emit and time from there.
+        self._spinner_absent_since: float | None = None
+        self._has_seen_spinner: bool = False
 
         self._states_q: asyncio.Queue = asyncio.Queue()
         self._events_q: asyncio.Queue = asyncio.Queue()
@@ -265,7 +272,20 @@ class Backend:
                         break
                     self._spinners_q.put_nowait(activity)
                     if isinstance(activity, _Spinner):
-                        self._last_spinner_active_at = time.time()
+                        # Spinner present → clear the absent timer.
+                        self._spinner_absent_since = None
+                        self._has_seen_spinner = True
+                    else:
+                        # Non-Spinner activity (None or IdleDecoration).
+                        # Only count toward "spinner absent" once we've
+                        # observed a Spinner at least once — otherwise a
+                        # cold-start None on a pane that simply hasn't
+                        # entered Working yet would set the timer wrongly.
+                        if (
+                            self._has_seen_spinner
+                            and self._spinner_absent_since is None
+                        ):
+                            self._spinner_absent_since = time.time()
             # Iterator ended naturally — pane was lost.
             self._trigger_safety("pane_lost")
         except PaneCaptureError:
@@ -281,15 +301,14 @@ class Backend:
                 await asyncio.sleep(0.1)
                 if not isinstance(self._state, Working):
                     continue
-                if self._last_spinner_active_at is None:
-                    # No spinner ever seen — start counting from live phase entry.
-                    # Use a "no spinner since live phase started" approximation:
-                    # this branch typically only matters at the very start.
+                if self._spinner_absent_since is None:
+                    # Spinner is currently present (or never observed).
+                    # Either way, do not declare interrupted.
                     continue
-                elapsed = time.time() - self._last_spinner_active_at
+                elapsed = time.time() - self._spinner_absent_since
                 if elapsed >= self._spinner_grace:
                     self._trigger_safety("spinner_grace")
-                    self._last_spinner_active_at = None
+                    self._spinner_absent_since = None
         except asyncio.CancelledError:
             raise
 

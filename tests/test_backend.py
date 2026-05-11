@@ -335,8 +335,15 @@ async def test_backend_process_probe_declares_dead(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_backend_spinner_grace_fires_from_working(monkeypatch):
-    """Working + spinner absent ≥ grace seconds → Idle(interrupted)."""
+async def test_backend_spinner_grace_fires_when_non_spinner_observed(monkeypatch):
+    """Working + a Spinner followed by None held for ≥ grace seconds → Idle(interrupted).
+
+    The grace mechanism keys on an explicit non-Spinner activity
+    (None / IdleDecoration) being observed and persisting, not on
+    Spinner-emit silence — because SpinnerMonitor coalesces unchanged
+    Spinner text and may go quiet for tens of seconds while the
+    spinner is in fact still visible in the pane.
+    """
     import ccmux_core.backend as bk
 
     later_ts = "2099-12-31T23:59:59+00:00"
@@ -358,7 +365,11 @@ async def test_backend_spinner_grace_fires_from_working(monkeypatch):
         mon = _FakeSpinnerMonitor.instances[0]
         from ccmux_spinner.parser import Spinner as _Spinner
 
+        # Feed Spinner first (so _has_seen_spinner becomes True), then
+        # feed None to simulate Esc-style pane transition.
         mon.feed(_Spinner(text="Thinking...", todos=()))
+        await asyncio.sleep(0.05)
+        mon.feed(None)
 
         out = []
 
@@ -370,3 +381,52 @@ async def test_backend_spinner_grace_fires_from_working(monkeypatch):
 
         await asyncio.wait_for(consume(), timeout=2.0)
         assert any(s == Idle(reason="interrupted") for s in out)
+
+
+@pytest.mark.asyncio
+async def test_backend_grace_does_not_fire_while_spinner_unchanged(monkeypatch):
+    """Regression: a Spinner emit followed by SpinnerMonitor silence must NOT
+    trigger Idle(interrupted) even after grace seconds.
+
+    SpinnerMonitor only emits on text change; long stretches of unchanged
+    spinner text produce zero emits even though the spinner is alive in
+    the pane.
+    """
+    import ccmux_core.backend as bk
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", ts=later_ts),
+        _ev("user_prompt_submit", ts=later_ts),
+        _ev("pre_tool_use", payload={"tool_name": "Bash"}, ts=later_ts),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    async with Backend(
+        tmux_session="ccmux",
+        pane_id="%1",
+        spinner_grace=0.2,
+        process_probe_startup_grace=10.0,
+    ) as b:
+        await asyncio.sleep(0.1)
+        assert _FakeSpinnerMonitor.instances
+        mon = _FakeSpinnerMonitor.instances[0]
+        from ccmux_spinner.parser import Spinner as _Spinner
+
+        mon.feed(_Spinner(text="Transmuting...", todos=()))
+
+        out = []
+
+        async def consume():
+            async for s in b.states():
+                out.append(s)
+
+        # Wait > spinner_grace; assert no Idle(interrupted) appears.
+        try:
+            await asyncio.wait_for(consume(), timeout=0.8)
+        except TimeoutError:
+            pass
+
+        assert not any(
+            isinstance(s, Idle) and s.reason == "interrupted" for s in out
+        )
