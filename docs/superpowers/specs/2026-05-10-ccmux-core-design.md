@@ -757,10 +757,12 @@ pattern. Settings lookup order:
 | `CCMUX_CORE_PROCESS_PROBE_INTERVAL` | `10` | Seconds between successive process probes. |
 | `CCMUX_CORE_PROCESS_PROBE_STARTUP_GRACE` | `10` | Seconds after Backend `__aenter__` during which no process probe runs (avoids false-positives during claude boot). |
 | `CCMUX_CORE_CLAUDE_PROC_NAMES` | `claude,node` | Comma-separated set of foreground process names that count as "claude is alive". |
+| `CCMUX_CORE_PRETTY_WIDTH` | `100` | Visual cell width for `ccmux-core watch` pretty mode (separator + body trim cap). Independent of `CLAUDE_TAP_PRETTY_WIDTH`. |
 
 Upstream env vars (`CLAUDE_TAP_POLL_INTERVAL`,
-`CCMUX_SPINNER_POLL_INTERVAL`, etc.) are read by the upstream
-libraries directly; ccmux-core does not proxy them.
+`CCMUX_SPINNER_POLL_INTERVAL`, `CLAUDE_TAP_PRETTY_WIDTH`, etc.) are
+read by the upstream libraries directly; ccmux-core does not proxy
+them.
 
 ## Dependencies
 

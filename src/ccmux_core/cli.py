@@ -17,10 +17,9 @@ import sys
 import unicodedata
 from datetime import UTC, datetime
 
-from claude_tap.config import pretty_width as _pretty_width
-
 from . import __version__
 from .backend import Backend
+from .config import pretty_width as _pretty_width
 from .discover import TmuxBinding, list_live_tmux_bindings
 from .state import Blocked, Dead, Idle, State, Working
 

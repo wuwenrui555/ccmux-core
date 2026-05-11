@@ -67,3 +67,22 @@ def test_shell_export_wins_over_settings_env(isolated_core_dir, monkeypatch):
     config._LOADED_SETTINGS_FROM.clear()
     config._load_settings_env_files()
     assert config.spinner_grace() == 9.0
+
+
+def test_pretty_width_default(isolated_core_dir):
+    assert config.pretty_width() == 100
+
+
+def test_pretty_width_from_env(isolated_core_dir, monkeypatch):
+    monkeypatch.setenv("CCMUX_CORE_PRETTY_WIDTH", "80")
+    assert config.pretty_width() == 80
+
+
+def test_pretty_width_invalid_falls_back(isolated_core_dir, monkeypatch):
+    monkeypatch.setenv("CCMUX_CORE_PRETTY_WIDTH", "not-a-number")
+    assert config.pretty_width() == 100
+
+
+def test_pretty_width_zero_falls_back(isolated_core_dir, monkeypatch):
+    monkeypatch.setenv("CCMUX_CORE_PRETTY_WIDTH", "0")
+    assert config.pretty_width() == 100

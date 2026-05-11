@@ -20,6 +20,11 @@ Recognized settings:
 * ``CCMUX_CORE_CLAUDE_PROC_NAMES`` — comma-separated set of
   foreground process names that count as "claude is alive"
   (default ``claude,node``).
+* ``CCMUX_CORE_PRETTY_WIDTH`` — visual cell width used by
+  ``ccmux-core watch`` (pretty mode) for both the separator line
+  and the body trim cap (default 100). Independent of
+  ``CLAUDE_TAP_PRETTY_WIDTH`` so a narrow split-pane viewer can
+  shrink ccmux-core without affecting other tools.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ DEFAULT_SPINNER_GRACE = 3.0
 DEFAULT_PROCESS_PROBE_INTERVAL = 10.0
 DEFAULT_PROCESS_PROBE_STARTUP_GRACE = 10.0
 DEFAULT_CLAUDE_PROC_NAMES = frozenset({"claude", "node"})
+DEFAULT_PRETTY_WIDTH = 100
 
 _SETTINGS_ENV_FILENAME = "settings.env"
 _LOADED_SETTINGS_FROM: list[Path] = []
@@ -71,6 +77,18 @@ def claude_proc_names() -> frozenset[str]:
         return DEFAULT_CLAUDE_PROC_NAMES
     names = {p.strip() for p in raw.split(",") if p.strip()}
     return frozenset(names) if names else DEFAULT_CLAUDE_PROC_NAMES
+
+
+def pretty_width() -> int:
+    """Visual cell width for ccmux-core watch pretty mode."""
+    raw = os.environ.get("CCMUX_CORE_PRETTY_WIDTH", "")
+    if not raw:
+        return DEFAULT_PRETTY_WIDTH
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_PRETTY_WIDTH
+    return value if value > 0 else DEFAULT_PRETTY_WIDTH
 
 
 def loaded_settings_files() -> list[Path]:

@@ -12,6 +12,7 @@ def isolated_core_dir(tmp_path, monkeypatch):
         "CCMUX_CORE_PROCESS_PROBE_INTERVAL",
         "CCMUX_CORE_PROCESS_PROBE_STARTUP_GRACE",
         "CCMUX_CORE_CLAUDE_PROC_NAMES",
+        "CCMUX_CORE_PRETTY_WIDTH",
     ):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
