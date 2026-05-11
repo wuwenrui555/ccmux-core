@@ -214,7 +214,7 @@ src/ccmux_core/
                         methods, all internal tasks
   discover.py        — TmuxBinding dataclass, list_live_tmux_bindings(),
                         discover_tmux_sessions()
-  errors.py          — exception types
+  error.py          — exception types
   cli.py             — `ccmux-core list` and `ccmux-core watch <tmux>` subcommands
 
 tests/
@@ -877,7 +877,7 @@ Standard git-flow with the existing CCMUX conventions:
    workflows from existing siblings).
 2. Branch `feat/v0.1.0-initial` off `main` (or `dev` once dev
    exists).
-3. Implement modules in order: `errors.py` → `state.py` →
+3. Implement modules in order: `error.py` → `state.py` →
    `state_machine.py` → `discover.py` → `config.py` → `backend.py`
    → `cli.py` → `__init__.py`. Tests alongside each module.
 4. Open PR; verify CI green (ruff / pyright / pytest).

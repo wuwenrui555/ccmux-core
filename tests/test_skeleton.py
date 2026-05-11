@@ -5,6 +5,6 @@ def test_import_package():
 
 
 def test_errors_importable():
-    from ccmux_core.errors import BackendError
+    from ccmux_core.error import BackendError
 
     assert issubclass(BackendError, Exception)

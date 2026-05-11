@@ -3,7 +3,7 @@
 from ._version import __version__
 from .backend import Backend
 from .discover import TmuxBinding, discover_tmux_sessions, list_live_tmux_bindings
-from .errors import BackendError, TmuxProbeError
+from .error import BackendError, TmuxProbeError
 from .state import Blocked, Dead, Idle, State, Working
 
 __all__ = [
