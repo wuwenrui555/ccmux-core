@@ -89,14 +89,19 @@ class Backend:
         self._state: State | None = None
         self._primary: str | None = None
         self._known_session_ids: frozenset[str] = frozenset()
-        # When SpinnerMonitor most recently emitted a None / IdleDecoration
-        # (i.e. "no spinner") observation. None while a Spinner is the
-        # latest activity. Used by the grace timer: a Spinner with
-        # unchanged text triggers no SpinnerMonitor emit at all, so we
-        # cannot infer "spinner absent" from emit silence — we have to
-        # wait for an explicit non-Spinner emit and time from there.
-        self._spinner_absent_since: float | None = None
-        self._has_seen_spinner: bool = False
+        # Reference to the live SpinnerMonitor instance, set when
+        # `_spinner_consumer` enters its async-with. The grace timer
+        # queries `mon.current` (latest classified Activity, regardless
+        # of coalescing) and `mon.last_pane_change_at` (unix epoch of
+        # last raw pane-text change). Combined, they distinguish:
+        #   * spinner alive and ticking      → mon.current is Spinner
+        #   * spinner alive with constant text → mon.current is Spinner
+        #   * pane streaming (no spinner)    → mon.current not Spinner,
+        #                                       but pane_change_at recent
+        #   * truly static (Esc-interrupted) → mon.current not Spinner,
+        #                                       pane_change_at stale
+        # Only the last case fires Idle(interrupted).
+        self._spinner_mon: SpinnerMonitor | None = None
 
         self._states_q: asyncio.Queue = asyncio.Queue()
         self._events_q: asyncio.Queue = asyncio.Queue()
@@ -263,29 +268,13 @@ class Backend:
             pass
 
     async def _spinner_consumer(self) -> None:
-        from ccmux_spinner.parser import Spinner as _Spinner
-
         try:
             async with SpinnerMonitor(self._pane_id) as mon:
+                self._spinner_mon = mon
                 async for activity in mon:
                     if self._stopped.is_set():
                         break
                     self._spinners_q.put_nowait(activity)
-                    if isinstance(activity, _Spinner):
-                        # Spinner present → clear the absent timer.
-                        self._spinner_absent_since = None
-                        self._has_seen_spinner = True
-                    else:
-                        # Non-Spinner activity (None or IdleDecoration).
-                        # Only count toward "spinner absent" once we've
-                        # observed a Spinner at least once — otherwise a
-                        # cold-start None on a pane that simply hasn't
-                        # entered Working yet would set the timer wrongly.
-                        if (
-                            self._has_seen_spinner
-                            and self._spinner_absent_since is None
-                        ):
-                            self._spinner_absent_since = time.time()
             # Iterator ended naturally — pane was lost.
             self._trigger_safety("pane_lost")
         except PaneCaptureError:
@@ -294,21 +283,52 @@ class Backend:
             raise
         except Exception:
             pass
+        finally:
+            self._spinner_mon = None
 
     async def _grace_timer(self) -> None:
+        """Fire ``Idle(interrupted)`` when (a) state is Working, (b) we
+        have observed at least one Spinner since this timer started
+        (so we know CC was alive), (c) the latest Activity is **not**
+        Spinner, and (d) the raw pane text has been static for
+        ``spinner_grace`` seconds.
+
+        Two independent signals from SpinnerMonitor:
+        * ``mon.current``: latest classified Activity, regardless of
+          coalescing. Spinner ⇒ CC alive, abort timer.
+        * ``mon.last_pane_change_at``: unix epoch of most recent raw
+          pane-text change. Stale ⇒ pane is static; recent ⇒ pane is
+          changing (streaming response, scrollback, etc.).
+
+        Together they distinguish "spinner gone because pane is
+        streaming" (don't fire) from "spinner gone and pane static"
+        (fire interrupted).
+        """
+        from ccmux_spinner.parser import Spinner as _Spinner
+
+        last_spinner_seen_at: float | None = None
         try:
             while not self._stopped.is_set():
                 await asyncio.sleep(0.1)
+                mon = self._spinner_mon
+                if mon is None:
+                    continue
+                # Note "spinner alive right now" each tick we see one.
+                if isinstance(mon.current, _Spinner):
+                    last_spinner_seen_at = time.time()
                 if not isinstance(self._state, Working):
                     continue
-                if self._spinner_absent_since is None:
-                    # Spinner is currently present (or never observed).
-                    # Either way, do not declare interrupted.
+                if last_spinner_seen_at is None:
+                    # Haven't confirmed CC was ever alive yet — wait.
                     continue
-                elapsed = time.time() - self._spinner_absent_since
-                if elapsed >= self._spinner_grace:
+                if isinstance(mon.current, _Spinner):
+                    # Spinner present right now — CC is alive.
+                    continue
+                # Spinner absent. Has the pane content been static?
+                pane_change_age = time.time() - mon.last_pane_change_at
+                if pane_change_age >= self._spinner_grace:
                     self._trigger_safety("spinner_grace")
-                    self._spinner_absent_since = None
+                    last_spinner_seen_at = None  # don't re-fire
         except asyncio.CancelledError:
             raise
 

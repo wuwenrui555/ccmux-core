@@ -9,6 +9,7 @@ iterator outputs.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 
 import pytest
@@ -68,13 +69,29 @@ class _FakeMessageStream:
 
 
 class _FakeSpinnerMonitor:
+    """Test double mirroring ccmux-spinner v0.2.1 API surface.
+
+    Exposes both the iterator and the new `current` / `last_pane_change_at`
+    properties that ccmux-core's grace timer queries.
+    """
+
     instances: list[_FakeSpinnerMonitor] = []
 
     def __init__(self, pane_id: str, poll_interval: float | None = None):
         self.pane_id = pane_id
         self._items: list = []
         self._cancel_event = asyncio.Event()
+        self._current = None  # latest Activity (mirrors mon.current)
+        self._last_pane_change_at: float = 0.0
         _FakeSpinnerMonitor.instances.append(self)
+
+    @property
+    def current(self):
+        return self._current
+
+    @property
+    def last_pane_change_at(self) -> float:
+        return self._last_pane_change_at
 
     async def __aenter__(self):
         return self
@@ -83,7 +100,21 @@ class _FakeSpinnerMonitor:
         self._cancel_event.set()
 
     def feed(self, item):
+        """Queue an Activity to be yielded by the iterator AND update
+        `current` to match. Also bumps `last_pane_change_at` so feeds
+        look like pane changes by default. Tests that want to simulate
+        a static pane can call `freeze_pane()` after feeding."""
         self._items.append(item)
+        self._current = item
+        self._last_pane_change_at = time.time()
+
+    def freeze_pane(self):
+        """Snapshot the current `last_pane_change_at` and stop advancing
+        it. Use after `feed(None)` to simulate Esc-stop (no further pane
+        changes). Tests that don't call this see pane_change_at refresh
+        on every feed, which matches normal flow."""
+        # No-op marker — tests can also just refrain from calling feed()
+        # again. Kept as an explicit affordance for readability.
 
     async def __aiter__(self):
         i = 0
@@ -428,3 +459,124 @@ async def test_backend_grace_does_not_fire_while_spinner_unchanged(monkeypatch):
             pass
 
         assert not any(isinstance(s, Idle) and s.reason == "interrupted" for s in out)
+
+
+@pytest.mark.asyncio
+async def test_backend_grace_does_not_fire_while_pane_changes_without_spinner(
+    monkeypatch,
+):
+    """Regression for the streaming-response case: after Spinner is seen,
+    a non-Spinner activity (None / IdleDecoration) does NOT trigger grace
+    as long as the raw pane text is still advancing — that's how we
+    distinguish 'streaming a long final reply' (pane changing, no spinner
+    visible above chrome) from 'Esc-interrupted' (pane static, no
+    spinner visible).
+    """
+    import ccmux_core.backend as bk
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", ts=later_ts),
+        _ev("user_prompt_submit", ts=later_ts),
+        _ev("pre_tool_use", payload={"tool_name": "Bash"}, ts=later_ts),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    async with Backend(
+        tmux_session="ccmux",
+        pane_id="%1",
+        spinner_grace=0.3,
+        process_probe_startup_grace=10.0,
+    ) as b:
+        await asyncio.sleep(0.15)
+        assert _FakeSpinnerMonitor.instances
+        mon = _FakeSpinnerMonitor.instances[0]
+        from ccmux_spinner.parser import Spinner as _Spinner
+
+        # First we see a Spinner (CC starts thinking).
+        mon.feed(_Spinner(text="Thinking...", todos=()))
+        await asyncio.sleep(0.05)
+
+        # Then CC starts streaming final reply: spinner is no longer
+        # parseable (response text occupies the row), so SpinnerMonitor
+        # yields None. But the pane is CHANGING — last_pane_change_at
+        # keeps advancing.
+        mon.feed(None)
+
+        # Background bumper simulates a continuously-changing pane
+        # throughout the rest of the test, mimicking streaming output.
+        async def bump_pane_continuously():
+            while True:
+                mon._last_pane_change_at = time.time()
+                await asyncio.sleep(0.05)
+
+        bumper = asyncio.create_task(bump_pane_continuously())
+        try:
+            out = []
+
+            async def consume():
+                async for s in b.states():
+                    out.append(s)
+
+            # Wait well past spinner_grace (0.3s) with pane bumping. Grace
+            # must NOT fire because pane is "still changing".
+            try:
+                await asyncio.wait_for(consume(), timeout=1.5)
+            except TimeoutError:
+                pass
+
+            assert not any(
+                isinstance(s, Idle) and s.reason == "interrupted" for s in out
+            ), f"unexpected interrupted in {out}"
+        finally:
+            bumper.cancel()
+            try:
+                await bumper
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+@pytest.mark.asyncio
+async def test_backend_grace_fires_when_pane_static_and_no_spinner(monkeypatch):
+    """Esc-after-streaming case: SpinnerMonitor.current is non-Spinner
+    AND last_pane_change_at is stale → fire interrupted.
+    """
+    import ccmux_core.backend as bk
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", ts=later_ts),
+        _ev("user_prompt_submit", ts=later_ts),
+        _ev("pre_tool_use", payload={"tool_name": "Bash"}, ts=later_ts),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    async with Backend(
+        tmux_session="ccmux",
+        pane_id="%1",
+        spinner_grace=0.3,
+        process_probe_startup_grace=10.0,
+    ) as b:
+        await asyncio.sleep(0.15)
+        assert _FakeSpinnerMonitor.instances
+        mon = _FakeSpinnerMonitor.instances[0]
+        from ccmux_spinner.parser import Spinner as _Spinner
+
+        mon.feed(_Spinner(text="Thinking...", todos=()))
+        await asyncio.sleep(0.05)
+        mon.feed(None)
+        # Freeze last_pane_change_at by NOT bumping it further.
+        frozen_at = mon._last_pane_change_at
+
+        out = []
+
+        async def consume():
+            async for s in b.states():
+                out.append(s)
+                if any(isinstance(x, Idle) and x.reason == "interrupted" for x in out):
+                    break
+
+        await asyncio.wait_for(consume(), timeout=2.0)
+        assert any(s == Idle(reason="interrupted") for s in out)
+        # And ensure the freeze actually held (the test is meaningful):
+        assert mon._last_pane_change_at == frozen_at
