@@ -427,6 +427,4 @@ async def test_backend_grace_does_not_fire_while_spinner_unchanged(monkeypatch):
         except TimeoutError:
             pass
 
-        assert not any(
-            isinstance(s, Idle) and s.reason == "interrupted" for s in out
-        )
+        assert not any(isinstance(s, Idle) and s.reason == "interrupted" for s in out)

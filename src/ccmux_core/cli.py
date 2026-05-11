@@ -1,8 +1,13 @@
-"""ccmux-core CLI: `list` (snapshot) and `watch <tmux_session>` (live).
+"""ccmux-core CLI.
 
-`watch` defaults to a pretty block-per-emission layout that mirrors
-`claude-tap watch-messages`. Pass ``--json`` for one tagged JSON
-object per line (machine-readable).
+Subcommands:
+
+* ``list`` — one-shot snapshot of currently-live tmux session bindings.
+* ``watch <tmux_session>`` — stream the four observations to stdout
+  as pretty blocks (default) or JSON Lines (``--json``).
+* ``web <tmux_session>`` — serve a live HTML viewer of the same
+  observations over HTTP, suitable for Tailscale-tailnet access
+  from a phone / laptop.
 """
 
 from __future__ import annotations
@@ -418,6 +423,15 @@ def cmd_watch(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+def cmd_web(args) -> int:
+    from .web import serve_web
+
+    try:
+        return asyncio.run(serve_web(args.session, host=args.host, port=args.port))
+    except KeyboardInterrupt:
+        return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ccmux-core")
     sub = p.add_subparsers(dest="cmd")
@@ -435,6 +449,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="One JSON object per line instead of pretty blocks",
     )
     p_watch.set_defaults(fn=cmd_watch)
+
+    p_web = sub.add_parser(
+        "web",
+        help="Serve a live HTML viewer of the streams over HTTP (Tailscale-friendly)",
+    )
+    p_web.add_argument("session", help="tmux session name")
+    p_web.add_argument("--host", default="0.0.0.0", help="bind host (default: 0.0.0.0)")
+    p_web.add_argument(
+        "--port", type=int, default=8765, help="bind port (default: 8765)"
+    )
+    p_web.set_defaults(fn=cmd_web)
 
     p_version = sub.add_parser("version", help="Print package version")
     p_version.set_defaults(fn=cmd_version)
