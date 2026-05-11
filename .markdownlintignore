@@ -1,0 +1,4 @@
+# Spec / plan documents under docs/superpowers/ are authored with
+# free-form structure (long lines, repeated headings across files,
+# etc.) and lint-clean enforcement adds noise without value.
+docs/superpowers/
