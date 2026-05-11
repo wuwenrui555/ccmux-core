@@ -81,11 +81,12 @@ def apply(
     # ----- Primary tracking ------------------------------------------------
     if et == "session_start":
         if primary is None:
+            new = Idle(reason="start")
             return StateMachineStep(
-                new_state=Idle(reason="start"),
+                new_state=new,
                 new_primary=sid,
                 known_session_ids=new_known,
-                emit=True,
+                emit=(new != state),
             )
         if sid == primary:
             # Resume after prompt_input_exit: no rebind, no state change.
