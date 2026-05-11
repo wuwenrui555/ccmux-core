@@ -93,9 +93,7 @@ def test_pretty_width_zero_falls_back(isolated_core_dir, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_alias_hook_poll_interval_mirrors_to_claude_tap(
-    isolated_core_dir, monkeypatch
-):
+def test_alias_hook_poll_interval_mirrors_to_claude_tap(isolated_core_dir, monkeypatch):
     monkeypatch.setenv("CCMUX_CORE_HOOK_POLL_INTERVAL", "0.25")
     config._mirror_upstream_aliases()
     import os
