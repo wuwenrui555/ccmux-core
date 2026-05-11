@@ -9,8 +9,9 @@ Recognized settings:
 
 * ``CCMUX_CORE_DIR`` — state directory (default ``~/.ccmux-core``).
   Hosts the ``settings.env`` file.
-* ``CCMUX_CORE_SPINNER_GRACE`` — seconds Working without a Spinner
-  before falling back to ``Idle(interrupted)`` (default 5).
+* ``CCMUX_CORE_SPINNER_GRACE`` — seconds Working with an observed
+  non-Spinner activity (None / IdleDecoration) staying current
+  before falling back to ``Idle(interrupted)`` (default 3).
 * ``CCMUX_CORE_PROCESS_PROBE_INTERVAL`` — seconds between
   successive ``tmux list-panes`` probes (default 10).
 * ``CCMUX_CORE_PROCESS_PROBE_STARTUP_GRACE`` — seconds after
@@ -28,7 +29,7 @@ import re
 from pathlib import Path
 
 DEFAULT_DIR = "~/.ccmux-core"
-DEFAULT_SPINNER_GRACE = 5.0
+DEFAULT_SPINNER_GRACE = 3.0
 DEFAULT_PROCESS_PROBE_INTERVAL = 10.0
 DEFAULT_PROCESS_PROBE_STARTUP_GRACE = 10.0
 DEFAULT_CLAUDE_PROC_NAMES = frozenset({"claude", "node"})

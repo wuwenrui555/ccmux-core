@@ -15,7 +15,7 @@ def test_dir_from_env(isolated_core_dir):
 
 
 def test_spinner_grace_default(isolated_core_dir):
-    assert config.spinner_grace() == 5.0
+    assert config.spinner_grace() == 3.0
 
 
 def test_spinner_grace_from_env(isolated_core_dir, monkeypatch):
@@ -25,7 +25,7 @@ def test_spinner_grace_from_env(isolated_core_dir, monkeypatch):
 
 def test_spinner_grace_invalid_falls_back(isolated_core_dir, monkeypatch):
     monkeypatch.setenv("CCMUX_CORE_SPINNER_GRACE", "abc")
-    assert config.spinner_grace() == 5.0
+    assert config.spinner_grace() == 3.0
 
 
 def test_process_probe_interval_default(isolated_core_dir):

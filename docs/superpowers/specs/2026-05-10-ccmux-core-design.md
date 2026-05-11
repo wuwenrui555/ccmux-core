@@ -753,7 +753,7 @@ pattern. Settings lookup order:
 | Env var | Default | Meaning |
 |---|---|---|
 | `CCMUX_CORE_DIR` | `~/.ccmux-core` | State directory; `settings.env` loaded from here. |
-| `CCMUX_CORE_SPINNER_GRACE` | `5` | Seconds Working without a Spinner before falling back to `Idle(interrupted)`. |
+| `CCMUX_CORE_SPINNER_GRACE` | `3` | Seconds Working with an observed non-Spinner activity staying current before falling back to `Idle(interrupted)`. |
 | `CCMUX_CORE_PROCESS_PROBE_INTERVAL` | `10` | Seconds between successive process probes. |
 | `CCMUX_CORE_PROCESS_PROBE_STARTUP_GRACE` | `10` | Seconds after Backend `__aenter__` during which no process probe runs (avoids false-positives during claude boot). |
 | `CCMUX_CORE_CLAUDE_PROC_NAMES` | `claude,node` | Comma-separated set of foreground process names that count as "claude is alive". |
