@@ -715,13 +715,16 @@ async def _watch_async(
             async def pump_states():
                 async for s in b.states():
                     ctx["current_state"] = s
-                    if pretty:
+                    if pretty and not ctx["status_enabled"]:
+                        # With status bar active, current state lives in
+                        # the bar (state= cell) — skip the scrolling log
+                        # block to keep the log focused on messages.
                         _emit_pretty(
                             _state_label(s),
                             _state_body(s, ctx["latest_spinner_text"]),
                             ts=None,
                         )
-                    else:
+                    elif not pretty:
                         obj = json.loads(_state_to_json(s))
                         obj["stream"] = "state"
                         print(json.dumps(obj), flush=True)
@@ -734,13 +737,16 @@ async def _watch_async(
                     if sid:
                         ctx["primary_sid"] = sid
                     ctx["latest_hook_event"] = ev
-                    if pretty:
+                    if pretty and not ctx["status_enabled"]:
+                        # With status bar active, latest hook lives in
+                        # the bar (hook= cell) — skip the scrolling log
+                        # block to keep the log focused on messages.
                         _emit_pretty(
                             _event_label(ev),
                             _event_body(ev),
                             ts=ev.get("timestamp"),
                         )
-                    else:
+                    elif not pretty:
                         print(
                             json.dumps({"stream": "event", **ev}, ensure_ascii=False),
                             flush=True,
