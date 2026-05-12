@@ -639,3 +639,140 @@ def test_color_for_label_includes_tool_and_permission():
 
     assert _color_for_label("TOOL · Bash") == _ANSI["blue"]
     assert _color_for_label("PERMISSION · Bash") == _ANSI["magenta"]
+
+
+# ---------------------------------------------------------------------------
+# Two-pane watch layout
+# ---------------------------------------------------------------------------
+
+
+def test_split_columns_geometry():
+    from ccmux_core.cli import _split_columns
+
+    # Even width: divider in the middle, right gets the extra cell.
+    lw, div, rw = _split_columns(120)
+    assert lw + 1 + rw == 120
+    assert div == lw + 1
+    assert lw == 59 and rw == 60
+
+    # Odd width: split is symmetric.
+    lw, div, rw = _split_columns(81)
+    assert lw + 1 + rw == 81
+    assert lw == 40 and rw == 40
+
+    # Degenerate: 1-col terminal → no usable panes.
+    lw, div, rw = _split_columns(1)
+    assert lw == 0 and rw == 0
+
+
+def test_is_left_message_routes_by_type():
+    from ccmux_core.cli import _is_left_message
+    from ccmux_core.message import (
+        AssistantText,
+        PermissionRequest,
+        ToolCall,
+        ToolResult,
+        UserPrompt,
+    )
+
+    assert _is_left_message(UserPrompt(text="hi", timestamp=0)) is True
+    assert _is_left_message(AssistantText(text="ok", timestamp=0)) is True
+    assert (
+        _is_left_message(ToolCall(tool_name="Bash", tool_input={}, timestamp=0))
+        is False
+    )
+    assert (
+        _is_left_message(
+            ToolResult(tool_name="Bash", output="", is_error=False, timestamp=0)
+        )
+        is False
+    )
+    assert (
+        _is_left_message(
+            PermissionRequest(tool_name="Bash", tool_input={}, timestamp=0)
+        )
+        is False
+    )
+
+
+def test_pretty_block_respects_width():
+    from ccmux_core.cli import _pretty_block
+
+    # Body well over width gets truncated with ellipsis.
+    block = _pretty_block(
+        label="ASSISTANT",
+        body="x" * 200,
+        ts="10:23:45",
+        tmux_session="ccmux",
+        window_id="@1",
+        primary_sid="abcd1234",
+        width=40,
+    )
+    body_line = block.split("\n")[2]
+    assert body_line.endswith("...")
+    # Body fits in width.
+    assert len(body_line) <= 40
+
+    # Separator pads to exactly the requested width.
+    sep_line = block.split("\n")[0]
+    # Separator is "─ HH:MM:SS.mmm ─...─" — the trailing ─ runs out to width.
+    # _visual_width counts CJK doublewide; "─" is treated as narrow here
+    # so len() == visual width for ASCII + ─.
+    assert len(sep_line) == 40
+
+
+def test_pane_overflow_drops_oldest():
+    from ccmux_core.cli import Pane
+    from ccmux_core.message import UserPrompt
+
+    ctx = {
+        "tmux_session": "s",
+        "window_id": "@1",
+        "primary_sid": "abc",
+        "current_state": None,
+        "color_enabled": False,
+    }
+    pane = Pane(top=3, left_col=1, width=40, capacity=2, ctx=ctx)
+    # Redirect stdout writes so push() doesn't pollute test output.
+    import io
+    import sys
+
+    orig = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        m1 = UserPrompt(text="one", timestamp=1.0)
+        m2 = UserPrompt(text="two", timestamp=2.0)
+        m3 = UserPrompt(text="three", timestamp=3.0)
+        pane.push(m1)
+        pane.push(m2)
+        pane.push(m3)
+    finally:
+        sys.stdout = orig
+
+    assert len(pane._buf) == 2
+    assert pane._buf[0] is m2
+    assert pane._buf[1] is m3
+
+
+def test_pane_zero_capacity_is_noop():
+    from ccmux_core.cli import Pane
+    from ccmux_core.message import UserPrompt
+
+    ctx = {
+        "tmux_session": "s",
+        "window_id": None,
+        "primary_sid": None,
+        "current_state": None,
+        "color_enabled": False,
+    }
+    pane = Pane(top=3, left_col=1, width=40, capacity=0, ctx=ctx)
+    import io
+    import sys
+
+    sys.stdout = io.StringIO()
+    try:
+        pane.push(UserPrompt(text="hi", timestamp=0))
+    finally:
+        sys.stdout = sys.__stdout__
+    # Push silently no-ops on a 0-capacity pane.
+    assert len(pane._buf) == 0

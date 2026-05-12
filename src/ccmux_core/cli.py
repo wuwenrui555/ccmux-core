@@ -17,6 +17,7 @@ import shutil
 import signal
 import sys
 import unicodedata
+from collections import deque
 from datetime import UTC, datetime
 
 from . import __version__
@@ -153,19 +154,20 @@ def _visual_trim(s: str, width: int) -> str:
     return "".join(out)
 
 
-def _trim_body(body: str) -> str:
-    width = _pretty_width()
-    if _visual_width(body) > width:
-        keep = max(0, width - _visual_width(_PRETTY_TRUNCATION_MARKER))
+def _trim_body(body: str, *, width: int | None = None) -> str:
+    w = _pretty_width() if width is None else width
+    if _visual_width(body) > w:
+        keep = max(0, w - _visual_width(_PRETTY_TRUNCATION_MARKER))
         return _visual_trim(body, keep) + _PRETTY_TRUNCATION_MARKER
     return body
 
 
-def _pretty_separator() -> str:
+def _pretty_separator(*, width: int | None = None) -> str:
     """``─ HH:MM:SS.mmm ─...─`` to a visual width matching pretty_width."""
+    w = _pretty_width() if width is None else width
     now = _now_timestamp()
     prefix = f"─ {now} "
-    rest = max(0, _pretty_width() - len(prefix))
+    rest = max(0, w - len(prefix))
     return prefix + "─" * rest
 
 
@@ -486,9 +488,11 @@ def _pretty_block(
     primary_sid: str | None,
     state: State | None = None,
     use_color: bool = False,
+    width: int | None = None,
 ) -> str:
+    w = _pretty_width() if width is None else width
     lines = [
-        _pretty_separator(),
+        _pretty_separator(width=w),
         _header(
             ts=ts,
             tmux_session=tmux_session,
@@ -498,7 +502,7 @@ def _pretty_block(
             state=state,
             use_color=use_color,
         ),
-        _trim_body(body),
+        _trim_body(body, width=w),
     ]
     return "\n".join(lines)
 
@@ -752,6 +756,203 @@ def _teardown_status(ctx: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Two-pane (messages / tool-use) split for the pretty watch layout
+# ---------------------------------------------------------------------------
+
+
+_BLOCK_HEIGHT = 4  # separator + header + body + trailing blank
+
+
+def _split_columns(cols: int) -> tuple[int, int, int]:
+    """Two-pane column geometry for terminal width ``cols``.
+
+    Returns ``(left_width, divider_col, right_width)`` such that
+    ``left_width + 1 + right_width == cols`` (the +1 is the divider).
+    """
+    left_width = max(0, (cols - 1) // 2)
+    divider_col = left_width + 1
+    right_width = max(0, cols - 1 - left_width)
+    return left_width, divider_col, right_width
+
+
+def _is_left_message(msg) -> bool:
+    """True for L1 messages that belong in the left ('conversation') pane.
+
+    Left = real conversation (user prompt + assistant text, which also
+    covers the final reply emitted at Stop). Right = tool use + tool
+    result + permission requests.
+    """
+    from .message import AssistantText, UserPrompt
+
+    return isinstance(msg, (UserPrompt, AssistantText))
+
+
+class Pane:
+    """One column of the two-pane watch grid; independently scrolling.
+
+    Each pane lives at ``(top, left_col)`` with shape ``height x width``
+    where ``height == capacity * _BLOCK_HEIGHT``. Blocks are exactly
+    4 rows tall (separator + header + body + trailing blank). The pane
+    stores raw L1 ``Message`` objects (not pre-rendered strings) so
+    SIGWINCH-driven width changes can re-render cleanly.
+    """
+
+    def __init__(
+        self,
+        *,
+        top: int,
+        left_col: int,
+        width: int,
+        capacity: int,
+        ctx: dict,
+    ) -> None:
+        self.top = top
+        self.left_col = left_col
+        self.width = width
+        self.capacity = capacity
+        self._ctx = ctx
+        self._buf: deque = deque()
+
+    def resize(self, *, top: int, left_col: int, width: int, capacity: int) -> None:
+        self.top = top
+        self.left_col = left_col
+        self.width = width
+        self.capacity = capacity
+        while len(self._buf) > self.capacity:
+            self._buf.popleft()
+        self._repaint_all()
+
+    def push(self, msg) -> None:
+        if self.capacity <= 0:
+            return
+        full = len(self._buf) >= self.capacity
+        self._buf.append(msg)
+        if full:
+            self._buf.popleft()
+            self._repaint_all()
+        else:
+            self._paint_slot(len(self._buf) - 1)
+
+    def clear_area(self) -> None:
+        """Blank every row this pane owns."""
+        if self.capacity <= 0 or self.width <= 0:
+            return
+        out: list[str] = ["\x1b[s"]
+        rows = self.capacity * _BLOCK_HEIGHT
+        for i in range(rows):
+            row = self.top + i
+            out.append(f"\x1b[{row};{self.left_col}H")
+            out.append(" " * self.width)
+        out.append("\x1b[u")
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    def _paint_slot(self, idx: int) -> None:
+        if self.width <= 0:
+            return
+        msg = self._buf[idx]
+        block = self._render_block(msg)
+        row_top = self.top + idx * _BLOCK_HEIGHT
+        out: list[str] = ["\x1b[s"]
+        # Block is 3 content lines; the 4th row of the slot is the
+        # trailing blank that visually separates blocks.
+        for j, line in enumerate(block.split("\n")):
+            row = row_top + j
+            out.append(f"\x1b[{row};{self.left_col}H")
+            pad = max(0, self.width - _visual_width(line))
+            out.append(line + " " * pad)
+        blank_row = row_top + _BLOCK_HEIGHT - 1
+        out.append(f"\x1b[{blank_row};{self.left_col}H")
+        out.append(" " * self.width)
+        out.append("\x1b[u")
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    def _repaint_all(self) -> None:
+        self.clear_area()
+        for i in range(len(self._buf)):
+            self._paint_slot(i)
+
+    def _render_block(self, msg) -> str:
+        return _pretty_block(
+            label=_l1_message_label(msg),
+            body=_l1_message_body(msg),
+            ts=_ts_short_from_unix(msg.timestamp),
+            tmux_session=self._ctx["tmux_session"],
+            window_id=self._ctx["window_id"],
+            primary_sid=self._ctx["primary_sid"],
+            state=self._ctx["current_state"],
+            use_color=self._ctx["color_enabled"],
+            width=self.width,
+        )
+
+
+def _draw_divider(*, top: int, bottom: int, col: int, use_color: bool) -> None:
+    """Paint the vertical separator between the two panes."""
+    if col <= 0 or bottom < top:
+        return
+    ch = f"{_ANSI['dim']}│{_ANSI['reset']}" if use_color else "│"
+    out: list[str] = ["\x1b[s"]
+    for row in range(top, bottom + 1):
+        out.append(f"\x1b[{row};{col}H{ch}")
+    out.append("\x1b[u")
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+
+
+def _pane_geometry(ctx: dict) -> tuple[int, int, int, int, int, int]:
+    """Compute current two-pane geometry from terminal size + status height.
+
+    Returns ``(pane_top, pane_bottom, capacity, left_width, divider_col, right_width)``.
+    """
+    rows, cols = _terminal_size()
+    pane_top = 3  # row 1 = top header, row 2 = blank
+    pane_bottom = max(pane_top - 1, rows - ctx.get("status_height", 0))
+    height = max(0, pane_bottom - pane_top + 1)
+    capacity = height // _BLOCK_HEIGHT
+    left_width, divider_col, right_width = _split_columns(cols)
+    return pane_top, pane_bottom, capacity, left_width, divider_col, right_width
+
+
+def _setup_panes(ctx: dict) -> None:
+    """Initialize ``ctx['left_pane']`` / ``ctx['right_pane']`` and draw divider."""
+    pane_top, pane_bottom, cap, lw, div, rw = _pane_geometry(ctx)
+    ctx["left_pane"] = Pane(top=pane_top, left_col=1, width=lw, capacity=cap, ctx=ctx)
+    ctx["right_pane"] = Pane(
+        top=pane_top, left_col=div + 1, width=rw, capacity=cap, ctx=ctx
+    )
+    _draw_divider(
+        top=pane_top, bottom=pane_bottom, col=div, use_color=ctx["color_enabled"]
+    )
+
+
+def _resize_panes(ctx: dict) -> None:
+    """Recompute geometry, redraw divider, resize+repaint both panes.
+
+    Called from the SIGWINCH handler after ``_emit_status`` has had
+    a chance to update ``status_height``.
+    """
+    left = ctx.get("left_pane")
+    right = ctx.get("right_pane")
+    if left is None or right is None:
+        return
+    pane_top, pane_bottom, cap, lw, div, rw = _pane_geometry(ctx)
+    # Clear scroll-area between top header and status bar so the old
+    # divider / pane content doesn't bleed through at the new geometry.
+    out: list[str] = ["\x1b[s"]
+    for row in range(pane_top, pane_bottom + 1):
+        out.append(f"\x1b[{row};1H\x1b[2K")
+    out.append("\x1b[u")
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+    _draw_divider(
+        top=pane_top, bottom=pane_bottom, col=div, use_color=ctx["color_enabled"]
+    )
+    left.resize(top=pane_top, left_col=1, width=lw, capacity=cap)
+    right.resize(top=pane_top, left_col=div + 1, width=rw, capacity=cap)
+
+
+# ---------------------------------------------------------------------------
 # `watch` subcommand
 # ---------------------------------------------------------------------------
 
@@ -795,6 +996,11 @@ async def _watch_async(
         "status_height": 0,
         "latest_hook_event": None,  # type: dict | None
         "latest_spinner_activity": None,  # type: Activity | None
+        # Two-pane layout. Only used when status_enabled is True; when
+        # disabled (--no-status / --no-color / --json / non-TTY) the
+        # legacy single-column _emit_pretty path is used instead.
+        "left_pane": None,  # type: Pane | None
+        "right_pane": None,  # type: Pane | None
     }
 
     can_overwrite = pretty and sys.stdout.isatty()
@@ -858,7 +1064,8 @@ async def _watch_async(
 
     # Install SIGWINCH so the bar re-renders to the new size on
     # terminal resize. Linux-only; wrap for non-Unix safety. Closure
-    # captures ctx so the handler can re-emit.
+    # captures ctx so the handler can re-emit. Two-pane geometry also
+    # rebuilds here, after _emit_status updates status_height.
     sigwinch_installed = False
     if ctx["status_enabled"]:
         try:
@@ -866,6 +1073,7 @@ async def _watch_async(
 
             def _on_resize() -> None:
                 _emit_status(ctx)
+                _resize_panes(ctx)
 
             loop.add_signal_handler(signal.SIGWINCH, _on_resize)
             sigwinch_installed = True
@@ -875,6 +1083,9 @@ async def _watch_async(
     # Initial placeholder render so the user sees the bar reserved.
     if ctx["status_enabled"]:
         _emit_status(ctx)
+        # _emit_status has just set status_height; now we can compute
+        # pane geometry and draw the divider.
+        _setup_panes(ctx)
 
     try:
         async with Backend(tmux_session=session, pane_id=match.pane_id) as b:
@@ -922,7 +1133,19 @@ async def _watch_async(
 
             async def pump_messages():
                 async for msg in b.messages():
-                    if pretty:
+                    if pretty and ctx["status_enabled"]:
+                        # Two-pane mode: conversation (UserPrompt /
+                        # AssistantText) → left, everything else
+                        # (ToolCall / ToolResult / PermissionRequest)
+                        # → right.
+                        pane = (
+                            ctx["left_pane"]
+                            if _is_left_message(msg)
+                            else ctx["right_pane"]
+                        )
+                        if pane is not None:
+                            pane.push(msg)
+                    elif pretty:
                         _emit_pretty(
                             _l1_message_label(msg),
                             _l1_message_body(msg),
