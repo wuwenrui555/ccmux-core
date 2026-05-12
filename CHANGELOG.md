@@ -15,10 +15,12 @@ three-layer model with state-gated operations.
 - L1 normalized `messages()` stream — deduplicated fusion of hook
   events and transcript items into a `Message` union
   (`UserPrompt | AssistantText | ToolCall | ToolResult |
-  PermissionRequest`). Note: transcript-side emissions
-  (`AssistantText`, `ToolCall`, `ToolResult`) are deferred — see
-  the follow-up tracked in the plan doc. Event-side emissions
-  (`UserPrompt`, `PermissionRequest`) ship in v0.2.0.
+  PermissionRequest`). All 5 emission paths shipped:
+  - `UserPrompt` ← `events.user_prompt_submit`
+  - `AssistantText` ← transcript Assistant text blocks
+  - `ToolCall` ← `events.pre_tool_use` (full `tool_input`)
+  - `ToolResult` ← `events.post_tool_use` (raw `tool_response`)
+  - `PermissionRequest` ← `events.permission_request`
 - L2 state-gated operations:
   - `send_prompt(text)` — Idle: send immediately;
     Working: append to concat queue (flushed on next Idle);

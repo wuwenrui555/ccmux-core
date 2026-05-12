@@ -1708,3 +1708,250 @@ async def test_backend_state_property_exposes_current_state(tmp_path):
         assert b.state is None or hasattr(b.state, "reason")  # tolerant
         b._state = Idle(reason="stop")
         assert b.state == Idle(reason="stop")
+
+
+# ---------------------------------------------------------------------------
+# L1 messages() — transcript-side + remaining event-side emissions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_messages_emits_tool_call_from_pre_tool_use_event(monkeypatch):
+    """pre_tool_use event → ToolCall L1 message (carries full tool_input)."""
+    import ccmux_core.backend as bk
+    from ccmux_core.message import ToolCall
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", ts=later_ts),
+        _ev(
+            "pre_tool_use",
+            payload={
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls", "timeout": 10},
+            },
+            ts=later_ts,
+        ),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+        msgs = []
+
+        async def collect():
+            async for m in b.messages():
+                msgs.append(m)
+                if any(isinstance(x, ToolCall) for x in msgs):
+                    return
+
+        await asyncio.wait_for(collect(), timeout=2.0)
+
+    tool_calls = [m for m in msgs if isinstance(m, ToolCall)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_name == "Bash"
+    assert tool_calls[0].tool_input == {"command": "ls", "timeout": 10}
+
+
+@pytest.mark.asyncio
+async def test_messages_emits_tool_result_from_post_tool_use_event(monkeypatch):
+    """post_tool_use event → ToolResult L1 message."""
+    import ccmux_core.backend as bk
+    from ccmux_core.message import ToolResult
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", ts=later_ts),
+        _ev(
+            "post_tool_use",
+            payload={
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+                "tool_response": {"output": "file1\nfile2\n", "exit_code": 0},
+            },
+            ts=later_ts,
+        ),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+        msgs = []
+
+        async def collect():
+            async for m in b.messages():
+                msgs.append(m)
+                if any(isinstance(x, ToolResult) for x in msgs):
+                    return
+
+        await asyncio.wait_for(collect(), timeout=2.0)
+
+    results = [m for m in msgs if isinstance(m, ToolResult)]
+    assert len(results) == 1
+    assert results[0].tool_name == "Bash"
+    assert "file1" in results[0].output
+    assert results[0].is_error is False
+
+
+@pytest.mark.asyncio
+async def test_messages_emits_tool_result_with_error_flag(monkeypatch):
+    """post_tool_use with is_error in tool_response → ToolResult.is_error=True."""
+    import ccmux_core.backend as bk
+    from ccmux_core.message import ToolResult
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", ts=later_ts),
+        _ev(
+            "post_tool_use",
+            payload={
+                "tool_name": "Bash",
+                "tool_input": {"command": "badcmd"},
+                "tool_response": {"output": "command not found", "is_error": True},
+            },
+            ts=later_ts,
+        ),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+        msgs = []
+
+        async def collect():
+            async for m in b.messages():
+                msgs.append(m)
+                if any(isinstance(x, ToolResult) for x in msgs):
+                    return
+
+        await asyncio.wait_for(collect(), timeout=2.0)
+
+    results = [m for m in msgs if isinstance(m, ToolResult)]
+    assert len(results) == 1
+    assert results[0].is_error is True
+
+
+@pytest.mark.asyncio
+async def test_messages_emits_assistant_text_from_transcript(monkeypatch):
+    """transcript ClaudeMessage(role=assistant, content_type=text) → AssistantText L1."""
+    from claude_tap import ClaudeMessage
+
+    import ccmux_core.backend as bk
+    from ccmux_core.message import AssistantText
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [_ev("session_start", sid="S1", ts=later_ts)]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    # Stand up a MessageStream fake that yields one assistant-text item
+    # after the live phase has begun.
+    msg = ClaudeMessage(
+        session_id="S1",
+        role="assistant",
+        content_type="text",
+        text="hello world",
+        timestamp=later_ts,
+    )
+
+    class _FakeMsgStream:
+        def __init__(self, **_):
+            self._sent = False
+            self._cancel = asyncio.Event()
+
+        async def __aiter__(self):
+            yield msg
+            self._sent = True
+            await self._cancel.wait()
+
+    monkeypatch.setattr(bk, "MessageStream", _FakeMsgStream)
+
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+        msgs = []
+
+        async def collect():
+            async for m in b.messages():
+                msgs.append(m)
+                if any(isinstance(x, AssistantText) for x in msgs):
+                    return
+
+        await asyncio.wait_for(collect(), timeout=2.0)
+
+    texts = [m for m in msgs if isinstance(m, AssistantText)]
+    assert len(texts) == 1
+    assert texts[0].text == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_messages_skips_non_text_transcript_items(monkeypatch):
+    """ClaudeMessage with content_type in (thinking, tool_use, tool_result)
+    or role=user should NOT produce AssistantText (those L1 kinds come
+    from the events stream or are excluded entirely)."""
+    from claude_tap import ClaudeMessage
+
+    import ccmux_core.backend as bk
+    from ccmux_core.message import AssistantText, ToolCall, ToolResult
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    # Drive a single assistant-text transcript item *after* a bunch of
+    # non-eligible ones, so we can confirm only the eligible one fires.
+    events = [_ev("session_start", sid="S1", ts=later_ts)]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    items = [
+        ClaudeMessage(
+            session_id="S1",
+            role="assistant",
+            content_type="thinking",
+            text="reasoning...",
+            timestamp=later_ts,
+        ),
+        ClaudeMessage(
+            session_id="S1",
+            role="assistant",
+            content_type="tool_use",
+            text="Bash(ls)",
+            timestamp=later_ts,
+            tool_name="Bash",
+            input={"command": "ls"},
+        ),
+        ClaudeMessage(
+            session_id="S1",
+            role="user",
+            content_type="tool_result",
+            text="files",
+            timestamp=later_ts,
+        ),
+        ClaudeMessage(
+            session_id="S1",
+            role="assistant",
+            content_type="text",
+            text="final reply",
+            timestamp=later_ts,
+        ),
+    ]
+
+    class _FakeMsgStream:
+        def __init__(self, **_):
+            self._cancel = asyncio.Event()
+
+        async def __aiter__(self):
+            for it in items:
+                yield it
+            await self._cancel.wait()
+
+    monkeypatch.setattr(bk, "MessageStream", _FakeMsgStream)
+
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+        msgs = []
+
+        async def collect():
+            async for m in b.messages():
+                msgs.append(m)
+                if any(isinstance(x, AssistantText) for x in msgs):
+                    return
+
+        await asyncio.wait_for(collect(), timeout=2.0)
+
+    texts = [m for m in msgs if isinstance(m, AssistantText)]
+    assert len(texts) == 1
+    assert texts[0].text == "final reply"
+    # And confirm we did NOT synthesize ToolCall/ToolResult from
+    # transcript items (those L1 kinds source from the events stream).
+    assert not any(isinstance(m, ToolCall | ToolResult) for m in msgs)

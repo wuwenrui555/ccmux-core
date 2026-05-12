@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import subprocess
 import time
 from collections.abc import AsyncIterator
@@ -33,8 +34,11 @@ from claude_tap.config import events_path as _default_events_path
 from . import config
 from .keys import send_keys
 from .message import (
+    AssistantText,
     Message,
     PermissionRequest,
+    ToolCall,
+    ToolResult,
     UserPrompt,
 )
 from .state import Dead, State, Working
@@ -224,18 +228,24 @@ class Backend:
     async def messages(self) -> AsyncIterator[Message]:
         """L1 normalized message stream.
 
-        Currently emits:
+        Emits all five L1 kinds, each sourced from exactly one
+        upstream channel (see the L2 dedup table):
 
-        * ``UserPrompt`` (from ``events.user_prompt_submit``)
-        * ``PermissionRequest`` (from ``events.permission_request``)
+        * ``UserPrompt`` ← ``events.user_prompt_submit``
+        * ``AssistantText`` ← transcript ``ClaudeMessage`` items where
+          ``role=assistant`` and ``content_type=text``
+        * ``ToolCall`` ← ``events.pre_tool_use`` (full ``tool_input``)
+        * ``ToolResult`` ← ``events.post_tool_use``
+          (``tool_response`` serialized to a string + ``is_error``)
+        * ``PermissionRequest`` ← ``events.permission_request``
 
-        Transcript-side kinds (``AssistantText``, ``ToolCall``,
-        ``ToolResult``) are part of the L1 design but deferred to a
-        follow-up: claude-tap's ``ClaudeMessage`` shape doesn't cleanly
-        map to our L1 types without upstream adjustments. See the
-        v0.2.0 CHANGELOG.
+        Other transcript content types (``thinking``, ``tool_use``,
+        ``tool_result``) are intentionally skipped on this stream:
+        ``ToolCall`` / ``ToolResult`` come from the events stream
+        instead (cleaner payload, no transcript decoration), and
+        ``thinking`` is excluded as internal reasoning chrome.
 
-        ``Notification`` events are deliberately excluded — they are
+        ``Notification`` events are also excluded — they are
         control-plane signals, not conversational content.
         """
         while True:
@@ -664,6 +674,45 @@ class Backend:
                                 timestamp=event_unix,
                             )
                         )
+                    elif et == "pre_tool_use":
+                        self._l1_messages_q.put_nowait(
+                            ToolCall(
+                                tool_name=payload.get("tool_name", "") or "",
+                                tool_input=payload.get("tool_input") or {},
+                                timestamp=event_unix,
+                            )
+                        )
+                    elif et == "post_tool_use":
+                        response = payload.get("tool_response")
+                        # Derive output as a string: prefer common
+                        # 'output' / 'content' / 'text' fields, else
+                        # JSON-serialize the whole response dict.
+                        if isinstance(response, dict):
+                            out_val = (
+                                response.get("output")
+                                or response.get("content")
+                                or response.get("text")
+                            )
+                            out_str = (
+                                out_val
+                                if isinstance(out_val, str)
+                                else json.dumps(response, ensure_ascii=False)
+                            )
+                            is_error = bool(response.get("is_error"))
+                        elif response is None:
+                            out_str = ""
+                            is_error = False
+                        else:
+                            out_str = str(response)
+                            is_error = False
+                        self._l1_messages_q.put_nowait(
+                            ToolResult(
+                                tool_name=payload.get("tool_name", "") or "",
+                                output=out_str,
+                                is_error=is_error,
+                                timestamp=event_unix,
+                            )
+                        )
                     if isinstance(step.new_state, Dead):
                         self._stopped.set()
                         return
@@ -712,6 +761,24 @@ class Backend:
                     break
                 if msg.session_id in self._known_session_ids:
                     self._messages_q.put_nowait(msg)
+                    # L1 fan-out: emit AssistantText for clean
+                    # assistant-text content. The other transcript-flavored
+                    # L1 kinds (ToolCall, ToolResult) are sourced from
+                    # the events stream — see `_event_consumer`. We
+                    # deliberately skip 'thinking', 'tool_use', and
+                    # 'tool_result' content_types here.
+                    if (
+                        getattr(msg, "role", "") == "assistant"
+                        and getattr(msg, "content_type", "") == "text"
+                    ):
+                        text = (getattr(msg, "text", "") or "").strip()
+                        if text:
+                            msg_ts = (
+                                _iso_to_unix(getattr(msg, "timestamp", None)) or 0.0
+                            )
+                            self._l1_messages_q.put_nowait(
+                                AssistantText(text=text, timestamp=msg_ts)
+                            )
         except asyncio.CancelledError:
             raise
         except Exception:
