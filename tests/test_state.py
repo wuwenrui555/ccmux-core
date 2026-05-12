@@ -57,3 +57,31 @@ def test_state_is_union_of_four():
     Working(tool_name=None)
     Blocked(kind="permission", tool_name="X", tool_input=None)
     Dead(reason="session_end")
+
+
+def test_blocked_has_request_id_default_none():
+    b = Blocked(kind="permission", tool_name="Bash", tool_input={})
+    assert b.request_id is None
+
+
+def test_blocked_has_expired_default_false():
+    b = Blocked(kind="permission", tool_name="Bash", tool_input={})
+    assert b.expired is False
+
+
+def test_blocked_accepts_request_id_and_expired():
+    b = Blocked(
+        kind="permission",
+        tool_name="Bash",
+        tool_input={},
+        request_id="r-abc123",
+        expired=True,
+    )
+    assert b.request_id == "r-abc123"
+    assert b.expired is True
+
+
+def test_blocked_equality_includes_request_id_and_expired():
+    a = Blocked(kind="permission", tool_name="Bash", tool_input={}, request_id="r-1")
+    b = Blocked(kind="permission", tool_name="Bash", tool_input={}, request_id="r-2")
+    assert a != b

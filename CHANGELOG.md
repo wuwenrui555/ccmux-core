@@ -5,6 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-05-12
+
+Breaking change: from a four-stream observation library to a
+three-layer model with state-gated operations.
+
+### Added
+
+- L1 normalized `messages()` stream — deduplicated fusion of hook
+  events and transcript items into a `Message` union
+  (`UserPrompt | AssistantText | ToolCall | ToolResult |
+  PermissionRequest`). All 5 emission paths shipped:
+  - `UserPrompt` ← `events.user_prompt_submit`
+  - `AssistantText` ← transcript Assistant text blocks
+  - `ToolCall` ← `events.pre_tool_use` (full `tool_input`)
+  - `ToolResult` ← `events.post_tool_use` (raw `tool_response`)
+  - `PermissionRequest` ← `events.permission_request`
+- L2 state-gated operations:
+  - `send_prompt(text)` — Idle: send immediately;
+    Working: append to concat queue (flushed on next Idle);
+    Blocked/Dead: raise.
+  - `interrupt()` — Esc + Ctrl-U + clear pending.
+  - `respond_permission(decision, mode, message)`.
+  - `respond_exit_plan(mode, feedback)`.
+  - `respond_question(selections)`.
+  - `drop_to_tui()` — release socket, fall through to TUI.
+  - `send_keys(keys, literal)` — copy-mode aware (tmux send-keys
+    default, TIOCSTI fallback when pane is in copy mode).
+- `Blocked` now carries `request_id` and `expired` fields.
+- New error types: `BlockedError`, `DeadError`, `WrongStateError`,
+  `WrongBlockedKindError`, `BlockedExpiredError`.
+- `decision.sock` listener bound automatically per Backend.
+
+### Changed (breaking)
+
+- L0 `messages()` renamed to `transcript_items()` so the L1 name
+  is free for the new normalized stream.
+- `Blocked.kind` discrimination moved from `pre_tool_use` to
+  `permission_request` events; `AskUserQuestion` and `ExitPlanMode`
+  fire through the permission hook (consistent with claude code's
+  actual behavior, validated against cmux's production logic).
+
+### Added — watch CLI
+
+- Pinned top header (`─── session sid ───`) and a fixed 10-row
+  bottom status bar that surfaces current `state=`, the latest
+  hook event, and the live spinner activity (text, age, tokens,
+  todos). DECSTBM scroll region keeps the middle log between the
+  two.
+- Two-pane middle area when the status bar is active: L1 message
+  stream is split between a left pane (`UserPrompt` /
+  `AssistantText` — the conversation) and a right pane
+  (`ToolCall` / `ToolResult` / `PermissionRequest` — tool use).
+  Each pane independently scrolls a deque of fixed 4-row blocks
+  and re-renders on `SIGWINCH` to fill the current terminal
+  width. Per-block state + separator timestamp are snapshotted at
+  push time so overflow repaint preserves history rather than
+  restamping every block to the latest live state.
+- ANSI coloring by state (`Idle` green / `Working` yellow /
+  `Blocked` magenta / `Dead` dim red) and by message-label kind
+  (`USER` / `ASSISTANT` bold-white, `TOOL` blue, `PERMISSION`
+  magenta, `EVENT` blue, `SPINNER` gray). `--no-color` and
+  `--no-status` both fall back to the legacy single-column
+  scrolling log.
+- `ccmux-core watch` clears the screen + scrollback on startup so
+  the layout starts on a fresh canvas.
+
+### Notes
+
+- `ccmux-core watch` scrolling log now shows the L1 normalized
+  message stream (`UserPrompt` / `AssistantText` / `ToolCall` /
+  `ToolResult` / `PermissionRequest`) instead of L0 transcript
+  items. L0 streams are still available via the library API
+  (`b.transcript_items()`, `b.events()`).
+- Single-Backend scope. `MultiBackend` orchestration and
+  multi-process `decision.sock` arbitration are deferred to a
+  follow-up spec.
+- ccmux-spinner 0.2.2 is recommended (pinned capture-pane).
+
 ## [0.1.0] - 2026-05-11
 
 ### Added
