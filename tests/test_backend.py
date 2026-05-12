@@ -1593,3 +1593,102 @@ async def test_respond_question_after_expired_raises(tmp_path):
         )
         with pytest.raises(BlockedExpiredError):
             await b.respond_question(["x"])
+
+
+@pytest.mark.asyncio
+async def test_drop_to_tui_responds_empty_and_marks_expired(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={},
+            request_id="r-1",
+        )
+        b._decision_listener = listener
+        await b.drop_to_tui()
+        # state should now be Blocked.expired=True
+        assert isinstance(b._state, Blocked)
+        assert b._state.expired is True
+        # kind / tool_name / request_id preserved
+        assert b._state.kind == "permission"
+        assert b._state.request_id == "r-1"
+
+    listener.respond.assert_called_once_with("r-1", {})
+
+
+@pytest.mark.asyncio
+async def test_drop_to_tui_outside_blocked_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import WrongStateError
+    from ccmux_core.state import Idle
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Idle(reason="stop")
+        with pytest.raises(WrongStateError):
+            await b.drop_to_tui()
+
+
+@pytest.mark.asyncio
+async def test_drop_to_tui_when_already_expired_is_noop(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={},
+            request_id="r-1",
+            expired=True,
+        )
+        b._decision_listener = listener
+        await b.drop_to_tui()
+        # no-op — no second respond call
+    listener.respond.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drop_to_tui_with_no_request_id_only_marks_expired(tmp_path):
+    """If Blocked has no request_id (e.g. from pre_tool_use route),
+    drop_to_tui still marks expired but doesn't try to respond."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="ask_user",
+            tool_name="AskUserQuestion",
+            tool_input={},
+            request_id=None,  # no request_id
+        )
+        b._decision_listener = listener
+        await b.drop_to_tui()
+        assert b._state.expired is True
+    listener.respond.assert_not_called()

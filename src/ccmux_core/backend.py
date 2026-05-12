@@ -536,6 +536,29 @@ class Backend:
         assert state.request_id is not None, "no request_id on Blocked state"
         await self._decision_listener.respond(state.request_id, decision_json)
 
+    async def drop_to_tui(self) -> None:
+        """Release the decision-socket request with empty {} so claude
+        falls through to its native TUI dialog. Marks Blocked.expired=True.
+
+        After this, structured respond_* methods raise BlockedExpiredError;
+        use send_keys() to navigate the TUI."""
+        import dataclasses
+
+        from .error import WrongStateError
+        from .state import Blocked
+
+        state = self._state
+        if not isinstance(state, Blocked):
+            raise WrongStateError(
+                f"drop_to_tui requires Blocked state, got {type(state).__name__}"
+            )
+        if state.expired:
+            return  # idempotent
+        if state.request_id is not None and self._decision_listener is not None:
+            await self._decision_listener.respond(state.request_id, {})
+        # Blocked is frozen — replace by value to flip expired
+        self._state = dataclasses.replace(state, expired=True)
+
     async def _flush_pending(self, *, new_state: State | None) -> None:
         """Called whenever we emit a new state. If the new state is
         Idle and the queue is non-empty, send the queued prompts as
