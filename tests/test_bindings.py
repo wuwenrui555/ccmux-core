@@ -331,3 +331,55 @@ async def test_discover_does_not_yield_same_tmux_twice(tmp_path):
     )
     assert len(out) == 1
     assert out[0].tmux_session == "A"
+
+
+def test_atomic_write_creates_file_with_payload(tmp_path):
+    from ccmux_core.bindings import _atomic_write
+
+    path = tmp_path / "bindings.json"
+    lock = tmp_path / "bindings.lock"
+    _atomic_write(path, lock, {"ccmux": {"pane_id": "%1"}})
+
+    assert path.exists()
+    assert json.loads(path.read_text()) == {"ccmux": {"pane_id": "%1"}}
+
+
+def test_atomic_write_leaves_no_tmp_file_on_success(tmp_path):
+    from ccmux_core.bindings import _atomic_write
+
+    path = tmp_path / "bindings.json"
+    lock = tmp_path / "bindings.lock"
+    _atomic_write(path, lock, {"a": 1})
+
+    leftover = list(tmp_path.glob("*.tmp"))
+    assert leftover == [], f"unexpected tmp files: {leftover}"
+
+
+def test_atomic_write_is_serialized_under_contention(tmp_path):
+    """Two threads racing for the lock; final file is one writer's output, not interleaved."""
+    import threading
+
+    from ccmux_core.bindings import _atomic_write
+
+    path = tmp_path / "bindings.json"
+    lock = tmp_path / "bindings.lock"
+    big_a = {"k": "A" * 10000}
+    big_b = {"k": "B" * 10000}
+
+    def w(payload):
+        for _ in range(10):
+            _atomic_write(path, lock, payload)
+
+    threads = [
+        threading.Thread(target=w, args=(big_a,)),
+        threading.Thread(target=w, args=(big_b,)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # File is valid JSON and is exactly one of the two payloads
+    # (whichever writer happened to be last).
+    parsed = json.loads(path.read_text())
+    assert parsed in (big_a, big_b)

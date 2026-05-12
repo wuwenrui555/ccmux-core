@@ -18,7 +18,9 @@ keeps primary intact.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -251,3 +253,28 @@ def _step(bindings: dict[str, _MutableBinding], event: dict) -> None:
         b.window_id = tmux.get("window_id", b.window_id)
     else:
         b.last_event_at = ts
+
+
+def _atomic_write(
+    path: Path,
+    lock_path: Path,
+    data: dict,
+) -> None:
+    """Write ``data`` to ``path`` atomically, serialized through ``lock_path``.
+
+    Uses an advisory ``fcntl.flock`` on ``lock_path`` for the duration
+    of the write so that concurrent writers (the tracker + a manual
+    ``bindings snapshot``) cannot race. Readers do not lock; the
+    ``os.replace`` is atomic from their perspective.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            tmp.write_bytes(serialized)
+            os.replace(tmp, path)
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
