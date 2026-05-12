@@ -48,6 +48,11 @@ three-layer model with state-gated operations.
 
 ### Notes
 
+- `ccmux-core watch` scrolling log now shows the L1 normalized
+  message stream (`UserPrompt` / `AssistantText` / `ToolCall` /
+  `ToolResult` / `PermissionRequest`) instead of L0 transcript
+  items. L0 streams are still available via the library API
+  (`b.transcript_items()`, `b.events()`).
 - Single-Backend scope. `MultiBackend` orchestration and
   multi-process `decision.sock` arbitration are deferred to a
   follow-up spec.

@@ -456,3 +456,87 @@ def test_parser_watch_no_status_default_false():
     p = build_parser()
     args = p.parse_args(["watch", "ccmux"])
     assert args.no_status is False
+
+
+# ---------------------------------------------------------------------------
+# L1 message formatters (used by watch's pump_messages)
+# ---------------------------------------------------------------------------
+
+
+def test_l1_message_label_for_each_type():
+    from ccmux_core.cli import _l1_message_label
+    from ccmux_core.message import (
+        AssistantText,
+        PermissionRequest,
+        ToolCall,
+        ToolResult,
+        UserPrompt,
+    )
+
+    assert _l1_message_label(UserPrompt(text="x", timestamp=0)) == "USER"
+    assert _l1_message_label(AssistantText(text="y", timestamp=0)) == "ASSISTANT"
+    assert (
+        _l1_message_label(ToolCall(tool_name="Bash", tool_input={}, timestamp=0))
+        == "TOOL · Bash"
+    )
+    assert (
+        _l1_message_label(
+            ToolResult(tool_name="Bash", output="", is_error=False, timestamp=0)
+        )
+        == "TOOL · Bash"
+    )
+    assert (
+        _l1_message_label(
+            ToolResult(tool_name="Bash", output="", is_error=True, timestamp=0)
+        )
+        == "TOOL · Bash · error"
+    )
+    assert (
+        _l1_message_label(
+            PermissionRequest(tool_name="Bash", tool_input={}, timestamp=0)
+        )
+        == "PERMISSION · Bash"
+    )
+
+
+def test_l1_message_body_for_each_type():
+    from ccmux_core.cli import _l1_message_body
+    from ccmux_core.message import (
+        AssistantText,
+        PermissionRequest,
+        ToolCall,
+        ToolResult,
+        UserPrompt,
+    )
+
+    assert _l1_message_body(UserPrompt(text="hi", timestamp=0)) == "hi"
+    assert _l1_message_body(AssistantText(text="ok", timestamp=0)) == "ok"
+    assert "command" in _l1_message_body(
+        ToolCall(tool_name="Bash", tool_input={"command": "ls"}, timestamp=0)
+    )
+    assert "stdout" in _l1_message_body(
+        ToolResult(tool_name="Bash", output="stdout text", is_error=False, timestamp=0)
+    )
+    # body is just the input, not the tool name
+    pr_body = _l1_message_body(
+        PermissionRequest(tool_name="Bash", tool_input={"command": "rm"}, timestamp=0)
+    )
+    assert "Bash" not in pr_body
+    assert "command" in pr_body
+
+
+def test_ts_short_from_unix():
+    from ccmux_core.cli import _ts_short_from_unix
+
+    # Falsy (None / 0.0) → wall-clock now (HH:MM:SS format).
+    out_none = _ts_short_from_unix(None)
+    assert len(out_none) == 8 and out_none[2] == ":" and out_none[5] == ":"
+    # Real epoch: 1234567890.0 → 2009-02-13 23:31:30 UTC.
+    assert _ts_short_from_unix(1234567890.0) == "23:31:30"
+
+
+def test_color_for_label_includes_tool_and_permission():
+    from ccmux_core.cli import _ANSI, _color_for_label
+
+    assert _color_for_label("TOOL · Bash") == _ANSI["blue"]
+    assert _color_for_label("PERMISSION · Bash") == _ANSI["magenta"]

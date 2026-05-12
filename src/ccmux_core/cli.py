@@ -128,6 +128,13 @@ def _ts_short(ts: str | None) -> str:
         return ts[11:19] if len(ts) >= 19 else ts[:8]
 
 
+def _ts_short_from_unix(ts: float | None) -> str:
+    """Reduce a unix float timestamp to ``HH:MM:SS`` (UTC). None → current."""
+    if not ts:
+        return datetime.now(UTC).strftime("%H:%M:%S")
+    return datetime.fromtimestamp(ts, tz=UTC).strftime("%H:%M:%S")
+
+
 def _visual_width(s: str) -> int:
     return sum(2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1 for ch in s)
 
@@ -223,8 +230,12 @@ def _color_for_label(label: str) -> str:
         }.get(head, "")
     if head == "EVENT":
         return _ANSI["blue"]
-    if head == "ASSISTANT" or head == "USER":
+    if head in {"ASSISTANT", "USER"}:
         return _ANSI["white_bold"]
+    if head == "TOOL":
+        return _ANSI["blue"]
+    if head == "PERMISSION":
+        return _ANSI["magenta"]
     if head == "SPINNER":
         return _ANSI["gray"]
     return ""
@@ -315,27 +326,55 @@ def _event_body(event: dict) -> str:
     return ""
 
 
-def _message_label(msg) -> str:
-    parts = [(msg.role or "?").upper()]
-    if msg.content_type and msg.content_type != "text":
-        parts.append(msg.content_type)
-    if msg.tool_name:
-        parts.append(msg.tool_name)
-    # Surface claude-tap's `source` field (v0.2.1+) so a viewer can
-    # see at a glance whether an assistant text is a final reply
-    # (source="hook") or mid-turn narration (source="transcript").
-    src = getattr(msg, "source", None)
-    if src:
-        parts.append(src)
-    return " · ".join(parts)
+def _l1_message_label(msg) -> str:
+    """Compact label for a Message union member.
+
+    USER / ASSISTANT / TOOL · <name> / TOOL · <name> · error /
+    PERMISSION · <name>.
+    """
+    from .message import (
+        AssistantText,
+        PermissionRequest,
+        ToolCall,
+        ToolResult,
+        UserPrompt,
+    )
+
+    if isinstance(msg, UserPrompt):
+        return "USER"
+    if isinstance(msg, AssistantText):
+        return "ASSISTANT"
+    if isinstance(msg, ToolCall):
+        return f"TOOL · {msg.tool_name}"
+    if isinstance(msg, ToolResult):
+        return f"TOOL · {msg.tool_name}" + (" · error" if msg.is_error else "")
+    if isinstance(msg, PermissionRequest):
+        return f"PERMISSION · {msg.tool_name}"
+    return "?"
 
 
-def _message_body(msg) -> str:
-    body = json.dumps(msg.text or "", ensure_ascii=False)[1:-1]
-    if msg.image_data:
-        n = len(msg.image_data)
-        body += f" [+{n} image{'s' if n != 1 else ''}]"
-    return body
+def _l1_message_body(msg) -> str:
+    """Body text for a Message union member."""
+    from .message import (
+        AssistantText,
+        PermissionRequest,
+        ToolCall,
+        ToolResult,
+        UserPrompt,
+    )
+
+    if isinstance(msg, (UserPrompt, AssistantText)):
+        # Single-line representation; trim by caller via _trim_body.
+        return json.dumps(msg.text, ensure_ascii=False)[1:-1]
+    if isinstance(msg, ToolCall):
+        return json.dumps(msg.tool_input, ensure_ascii=False)
+    if isinstance(msg, ToolResult):
+        if isinstance(msg.output, str):
+            return json.dumps(msg.output, ensure_ascii=False)[1:-1]
+        return json.dumps(msg.output, ensure_ascii=False)
+    if isinstance(msg, PermissionRequest):
+        return json.dumps(msg.tool_input, ensure_ascii=False)
+    return ""
 
 
 def _overwrite_prefix(
@@ -679,10 +718,15 @@ async def _watch_async(
     def _emit_pretty(
         label: str, body: str, ts: str | None, is_spinner: bool = False
     ) -> None:
+        # ``ts`` here is already an ``HH:MM:SS`` short string (or None,
+        # meaning "use wall-clock now"). Call sites convert from
+        # whatever source format they have (ISO string, unix float)
+        # via ``_ts_short`` / ``_ts_short_from_unix`` before calling.
+        ts_short = ts if ts is not None else _ts_short(None)
         block = _pretty_block(
             label=label,
             body=body,
-            ts=_ts_short(ts),
+            ts=ts_short,
             tmux_session=ctx["tmux_session"],
             window_id=ctx["window_id"],
             primary_sid=ctx["primary_sid"],
@@ -780,7 +824,7 @@ async def _watch_async(
                         _emit_pretty(
                             _event_label(ev),
                             _event_body(ev),
-                            ts=ev.get("timestamp"),
+                            ts=_ts_short(ev.get("timestamp")),
                         )
                     elif not pretty:
                         print(
@@ -790,22 +834,16 @@ async def _watch_async(
                     _emit_status(ctx)
 
             async def pump_messages():
-                async for msg in b.transcript_items():
+                async for msg in b.messages():
                     if pretty:
                         _emit_pretty(
-                            _message_label(msg),
-                            _message_body(msg),
-                            ts=msg.timestamp,
+                            _l1_message_label(msg),
+                            _l1_message_body(msg),
+                            ts=_ts_short_from_unix(msg.timestamp),
                         )
                     else:
                         d = dataclasses.asdict(msg)
-                        if d.get("image_data"):
-                            import base64
-
-                            d["image_data"] = [
-                                (mt, base64.b64encode(bts).decode("ascii"))
-                                for (mt, bts) in d["image_data"]
-                            ]
+                        d["kind"] = type(msg).__name__
                         print(
                             json.dumps({"stream": "message", **d}, ensure_ascii=False),
                             flush=True,
