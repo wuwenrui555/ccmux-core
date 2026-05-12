@@ -168,6 +168,38 @@ def test_session_end_preserves_entry():
     assert entry.session_id_history == ["S1"]
 
 
+def test_history_appends_new_sid_on_reattach(tmp_path):
+    p = tmp_path / "events.jsonl"
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", ts="T1"),
+            _ev("session_end", "S1", payload={"reason": "exit"}, ts="T2"),
+            _ev("session_start", "S2", ts="T3"),
+        ],
+    )
+    [out] = list_live_tmux_bindings(events_path=p)
+    assert out.current_session_id == "S2"
+    assert out.session_id_history == ("S1", "S2")
+    assert out.ended_at is None
+
+
+def test_history_dedups_resume_of_same_sid(tmp_path):
+    p = tmp_path / "events.jsonl"
+    _write_events(
+        p,
+        [
+            _ev("session_start", "S1", ts="T1"),
+            _ev("session_end", "S1", payload={"reason": "exit"}, ts="T2"),
+            _ev("session_start", "S1", ts="T3"),  # --resume scenario
+        ],
+    )
+    [out] = list_live_tmux_bindings(events_path=p)
+    assert out.current_session_id == "S1"
+    assert out.session_id_history == ("S1",), "resume must not duplicate"
+    assert out.ended_at is None
+
+
 def test_pane_id_follows_latest_event(tmp_path):
     p = tmp_path / "events.jsonl"
     _write_events(
