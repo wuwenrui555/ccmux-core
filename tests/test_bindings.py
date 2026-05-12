@@ -89,12 +89,23 @@ def test_single_session_start_yields_one_binding(tmp_path):
             pane_id="%42",
             window_id="@7",
             current_session_id="S1",
-            session_id_history=(),
+            session_id_history=("S1",),
             first_seen_at="2026-05-10T00:00:00+00:00",
             last_event_at="2026-05-10T00:00:00+00:00",
             ended_at=None,
         )
     ]
+
+
+def test_session_start_populates_new_fields(tmp_path):
+    p = tmp_path / "events.jsonl"
+    _write_events(p, [_ev("session_start", "S1", ts="T1")])
+    [out] = list_live_tmux_bindings(events_path=p)
+    assert out.current_session_id == "S1"
+    assert out.session_id_history == ("S1",)
+    assert out.first_seen_at == "T1"
+    assert out.last_event_at == "T1"
+    assert out.ended_at is None
 
 
 def test_clear_chain_yields_only_last_primary(tmp_path):

@@ -87,14 +87,14 @@ def list_live_tmux_bindings(
             tmux_session=b.tmux_session,
             pane_id=b.pane_id,
             window_id=b.window_id,
-            current_session_id=b.primary_session_id,
-            session_id_history=(),
-            first_seen_at=b.last_event_at,
+            current_session_id=b.current_session_id or "",
+            session_id_history=tuple(b.session_id_history),
+            first_seen_at=b.first_seen_at,
             last_event_at=b.last_event_at,
-            ended_at=None,
+            ended_at=b.ended_at,
         )
         for b in bindings.values()
-        if b.primary_session_id is not None
+        if b.current_session_id is not None
     ]
 
 
@@ -147,17 +147,17 @@ async def discover_tmux_sessions(
             buf = ""
             _step(bindings, ev)
             for tmux_session, b in list(bindings.items()):
-                if tmux_session not in yielded and b.primary_session_id is not None:
+                if tmux_session not in yielded and b.current_session_id is not None:
                     yielded.add(tmux_session)
                     yield TmuxBinding(
                         tmux_session=b.tmux_session,
                         pane_id=b.pane_id,
                         window_id=b.window_id,
-                        current_session_id=b.primary_session_id,
-                        session_id_history=(),
-                        first_seen_at=b.last_event_at,
+                        current_session_id=b.current_session_id or "",
+                        session_id_history=tuple(b.session_id_history),
+                        first_seen_at=b.first_seen_at,
                         last_event_at=b.last_event_at,
-                        ended_at=None,
+                        ended_at=b.ended_at,
                     )
 
 
@@ -171,8 +171,11 @@ class _MutableBinding:
     tmux_session: str
     pane_id: str
     window_id: str
-    primary_session_id: str | None
+    current_session_id: str | None
+    session_id_history: list[str]
+    first_seen_at: str
     last_event_at: str
+    ended_at: str | None
 
 
 def _step(bindings: dict[str, _MutableBinding], event: dict) -> None:
@@ -194,26 +197,40 @@ def _step(bindings: dict[str, _MutableBinding], event: dict) -> None:
     b = bindings.get(tmux_session)
 
     if et == "session_start":
-        if b is None or b.primary_session_id is None:
+        if b is None:
             bindings[tmux_session] = _MutableBinding(
                 tmux_session=tmux_session,
                 pane_id=tmux.get("pane_id", ""),
                 window_id=tmux.get("window_id", ""),
-                primary_session_id=sid,
+                current_session_id=sid,
+                session_id_history=[sid],
+                first_seen_at=ts,
                 last_event_at=ts,
+                ended_at=None,
             )
             return
+        if b.current_session_id is None:
+            # Re-attach after end / clear. Append sid to history if new.
+            if sid not in b.session_id_history:
+                b.session_id_history.append(sid)
+            b.current_session_id = sid
+            b.pane_id = tmux.get("pane_id", b.pane_id)
+            b.window_id = tmux.get("window_id", b.window_id)
+            b.ended_at = None
+            b.last_event_at = ts
+            return
+        # current set already — subagent / duplicate event
         b.last_event_at = ts
         return
 
     if et == "session_end":
-        if b is None or sid != b.primary_session_id:
+        if b is None or sid != b.current_session_id:
             if b is not None:
                 b.last_event_at = ts
             return
         reason = payload.get("reason", "")
         if reason == "clear":
-            b.primary_session_id = None
+            b.current_session_id = None
             b.last_event_at = ts
             return
         if reason == "prompt_input_exit":
@@ -224,7 +241,7 @@ def _step(bindings: dict[str, _MutableBinding], event: dict) -> None:
 
     if b is None:
         return
-    if sid == b.primary_session_id:
+    if sid == b.current_session_id:
         b.last_event_at = ts
         b.pane_id = tmux.get("pane_id", b.pane_id)
         b.window_id = tmux.get("window_id", b.window_id)
