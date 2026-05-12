@@ -670,13 +670,14 @@ def _emit_status(ctx: dict) -> None:
         state=ctx["current_state"],
         use_color=ctx["color_enabled"],
     )
-    # Status bar fixed at 10 rows:
-    #   1: blank (above separator)
-    #   2: separator
-    #   3-10: 8 content lines from _render_status_lines
-    full = ["", sep, *lines]
-    # Defensive: enforce 10-row contract
-    assert len(full) == 10, f"status bar must be 10 rows, got {len(full)}"
+    # Status bar fixed at 11 rows:
+    #   1:  blank (above separator)
+    #   2:  separator
+    #   3:  blank (below separator)
+    #   4-11: 8 content lines from _render_status_lines
+    full = ["", sep, "", *lines]
+    # Defensive: enforce 11-row contract
+    assert len(full) == 11, f"status bar must be 11 rows, got {len(full)}"
     new_height = len(full)
     old_height = ctx["status_height"]
 
