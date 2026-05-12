@@ -13,6 +13,8 @@ import argparse
 import asyncio
 import dataclasses
 import json
+import shutil
+import signal
 import sys
 import unicodedata
 from datetime import UTC, datetime
@@ -397,11 +399,200 @@ def _pretty_block(
 
 
 # ---------------------------------------------------------------------------
+# Bottom status bar (DECSTBM scroll region)
+# ---------------------------------------------------------------------------
+
+
+def _status_separator(width: int) -> str:
+    """Top separator line for the status bar.
+
+    ``─── STATUS ──...──`` padded out to ``width`` visual cells.
+    """
+    label = "─── STATUS "
+    return label + "─" * max(0, width - _visual_width(label))
+
+
+def _hook_age_seconds(ts: str | None) -> int | None:
+    """Seconds elapsed since ``ts`` (ISO-8601). None if unparseable."""
+    if not ts:
+        return None
+    raw = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+    try:
+        when = datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    delta = datetime.now(UTC) - when
+    return max(0, int(delta.total_seconds()))
+
+
+def _render_status_lines(
+    *,
+    state,
+    latest_hook_event: dict | None,
+    latest_spinner_activity,
+    use_color: bool,
+    width: int,
+) -> list[str]:
+    """Render status bar content as a list of lines (no leading separator).
+
+    Layout::
+
+        state=<STATE_SUMMARY>  hook=<event_type>(<tool>) <age>
+        spinner=<line1>
+                <line2>  (if multi-line)
+                <line3>  (etc.)
+          ☐ <todo 1>
+          ☐ <todo 2>
+
+    Returns one line per row, NOT including the top separator. Each
+    line is plain text trimmed to ``width`` visual columns.
+    """
+    # --- state cell ---
+    if state is None:
+        state_cell = "state=(waiting)"
+    else:
+        summary = _state_summary(state)
+        if use_color:
+            color = _color_for_state(state)
+            summary = _paint(summary, color, enabled=True)
+        state_cell = f"state={summary}"
+
+    # --- hook cell ---
+    if latest_hook_event is None:
+        hook_cell = "hook=(none)"
+    else:
+        et = latest_hook_event.get("event_type", "?")
+        payload = latest_hook_event.get("payload") or {}
+        tool = payload.get("tool_name")
+        head = f"{et}({tool})" if tool else et
+        age = _hook_age_seconds(latest_hook_event.get("timestamp"))
+        hook_cell = f"hook={head}" + (f" {age}s ago" if age is not None else "")
+
+    head_line = f"{state_cell}  {hook_cell}"
+
+    out: list[str] = [head_line]
+
+    # --- spinner block ---
+    if latest_spinner_activity is None:
+        out.append("spinner=(none)")
+    else:
+        text = getattr(latest_spinner_activity, "text", "") or ""
+        spinner_lines = text.split("\n")
+        if not spinner_lines:
+            spinner_lines = [""]
+        out.append(f"spinner={spinner_lines[0]}")
+        for cont in spinner_lines[1:]:
+            out.append(f"        {cont}")
+
+        # ccmux-spinner's Spinner.todos is tuple[str, ...] with no
+        # completion field; render all as unchecked. If upstream
+        # adds done/completed info later, swap in ☑ here.
+        for item in getattr(latest_spinner_activity, "todos", ()) or ():
+            done = False
+            if hasattr(item, "done"):
+                done = bool(item.done)
+            elif hasattr(item, "completed"):
+                done = bool(item.completed)
+            elif hasattr(item, "state"):
+                done = str(item.state).lower() in ("done", "completed")
+            text_part = getattr(item, "text", None) or str(item)
+            mark = "☑" if done else "☐"
+            out.append(f"  {mark} {text_part}")
+
+    return [_visual_trim(line, width) for line in out]
+
+
+def _terminal_size() -> tuple[int, int]:
+    """``(rows, cols)`` from ``shutil.get_terminal_size`` with a safe
+    fallback if the terminal can't be queried.
+    """
+    sz = shutil.get_terminal_size(fallback=(80, 24))
+    return sz.lines, sz.columns
+
+
+def _emit_status(ctx: dict) -> None:
+    """Recompute status content, adjust scroll region if its height
+    changed, and redraw the status area at the bottom of the terminal.
+
+    No-op when status is disabled.
+    """
+    if not ctx.get("status_enabled"):
+        return
+
+    rows, cols = _terminal_size()
+
+    lines = _render_status_lines(
+        state=ctx["current_state"],
+        latest_hook_event=ctx["latest_hook_event"],
+        latest_spinner_activity=ctx["latest_spinner_activity"],
+        use_color=ctx["color_enabled"],
+        width=cols,
+    )
+    sep = _status_separator(cols)
+    full = [sep, *lines]
+    new_height = len(full)
+    old_height = ctx["status_height"]
+
+    out: list[str] = []
+
+    # If height changed, re-scope scroll region.
+    if new_height != old_height:
+        out.append("\x1b[s")
+        out.append("\x1b[r")  # reset region so we can clear old area
+        if old_height > 0:
+            old_start = max(1, rows - old_height + 1)
+            out.append(f"\x1b[{old_start};1H")
+            out.append("\x1b[J")
+        scroll_bottom = max(1, rows - new_height)
+        out.append(f"\x1b[1;{scroll_bottom}r")
+        ctx["status_height"] = new_height
+        out.append("\x1b[u")
+
+    # Redraw the status content at its current position.
+    status_start = max(1, rows - new_height + 1)
+    out.append("\x1b[s")
+    for i, line in enumerate(full):
+        row = status_start + i
+        out.append(f"\x1b[{row};1H")
+        out.append("\x1b[2K")
+        out.append(line)
+    out.append("\x1b[u")
+
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+
+
+def _teardown_status(ctx: dict) -> None:
+    """Reset the scroll region and park the cursor below the status
+    area on exit. Safe to call when the status bar was never enabled.
+    """
+    if not ctx.get("status_enabled"):
+        return
+    rows, _cols = _terminal_size()
+    out = [
+        "\x1b[r",  # reset scroll region
+        f"\x1b[{rows};1H",  # cursor at last row
+        "\n",  # advance past the status area (shell prompt lands here)
+    ]
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+    ctx["status_enabled"] = False
+    ctx["status_height"] = 0
+
+
+# ---------------------------------------------------------------------------
 # `watch` subcommand
 # ---------------------------------------------------------------------------
 
 
-async def _watch_async(session: str, pretty: bool, no_color: bool = False) -> int:
+async def _watch_async(
+    session: str,
+    pretty: bool,
+    no_color: bool = False,
+    no_status: bool = False,
+) -> int:
     bindings = list_live_tmux_bindings()
     match = next((b for b in bindings if b.tmux_session == session), None)
     if match is None:
@@ -410,6 +601,8 @@ async def _watch_async(session: str, pretty: bool, no_color: bool = False) -> in
             file=sys.stderr,
         )
         return 1
+
+    status_enabled = pretty and sys.stdout.isatty() and not no_color and not no_status
 
     # Shared mutable context for pretty formatting.
     ctx = {
@@ -428,6 +621,11 @@ async def _watch_async(session: str, pretty: bool, no_color: bool = False) -> in
         "last_emit_was_spinner": False,
         "spinner_block_lines": 0,
         "color_enabled": pretty and sys.stdout.isatty() and not no_color,
+        # Bottom status bar (DECSTBM scroll region).
+        "status_enabled": status_enabled,
+        "status_height": 0,
+        "latest_hook_event": None,  # type: dict | None
+        "latest_spinner_activity": None,  # type: Activity | None
     }
 
     can_overwrite = pretty and sys.stdout.isatty()
@@ -470,93 +668,136 @@ async def _watch_async(session: str, pretty: bool, no_color: bool = False) -> in
         else:
             ctx["last_emit_was_spinner"] = False
 
-    async with Backend(tmux_session=session, pane_id=match.pane_id) as b:
+    # Install SIGWINCH so the bar re-renders to the new size on
+    # terminal resize. Linux-only; wrap for non-Unix safety. Closure
+    # captures ctx so the handler can re-emit.
+    sigwinch_installed = False
+    if ctx["status_enabled"]:
+        try:
+            loop = asyncio.get_running_loop()
 
-        async def pump_states():
-            async for s in b.states():
-                ctx["current_state"] = s
-                if pretty:
-                    _emit_pretty(
-                        _state_label(s),
-                        _state_body(s, ctx["latest_spinner_text"]),
-                        ts=None,
-                    )
-                else:
-                    obj = json.loads(_state_to_json(s))
-                    obj["stream"] = "state"
-                    print(json.dumps(obj), flush=True)
+            def _on_resize() -> None:
+                _emit_status(ctx)
 
-        async def pump_events():
-            async for ev in b.events():
-                # Update primary_sid in case session rebound (e.g., /clear).
-                sid = (ev.get("claude") or {}).get("session_id")
-                if sid:
-                    ctx["primary_sid"] = sid
-                if pretty:
-                    _emit_pretty(
-                        _event_label(ev),
-                        _event_body(ev),
-                        ts=ev.get("timestamp"),
-                    )
-                else:
-                    print(
-                        json.dumps({"stream": "event", **ev}, ensure_ascii=False),
-                        flush=True,
-                    )
+            loop.add_signal_handler(signal.SIGWINCH, _on_resize)
+            sigwinch_installed = True
+        except (AttributeError, NotImplementedError, ValueError):
+            sigwinch_installed = False
 
-        async def pump_messages():
-            async for msg in b.transcript_items():
-                if pretty:
-                    _emit_pretty(
-                        _message_label(msg),
-                        _message_body(msg),
-                        ts=msg.timestamp,
-                    )
-                else:
-                    d = dataclasses.asdict(msg)
-                    if d.get("image_data"):
-                        import base64
+    # Initial placeholder render so the user sees the bar reserved.
+    if ctx["status_enabled"]:
+        _emit_status(ctx)
 
-                        d["image_data"] = [
-                            (mt, base64.b64encode(bts).decode("ascii"))
-                            for (mt, bts) in d["image_data"]
-                        ]
-                    print(
-                        json.dumps({"stream": "message", **d}, ensure_ascii=False),
-                        flush=True,
-                    )
+    try:
+        async with Backend(tmux_session=session, pane_id=match.pane_id) as b:
 
-        async def pump_spinners():
-            async for a in b.spinners():
-                # Cache for state body inclusion.
-                if a is not None and hasattr(a, "text"):
-                    ctx["latest_spinner_text"] = a.text
-                elif a is None:
-                    ctx["latest_spinner_text"] = None
-                if pretty:
-                    _emit_pretty(
-                        _spinner_label(a),
-                        _spinner_body(a),
-                        ts=None,
-                        is_spinner=True,
-                    )
-                else:
-                    if a is None:
-                        obj = {"stream": "spinner", "type": "none"}
+            async def pump_states():
+                async for s in b.states():
+                    ctx["current_state"] = s
+                    if pretty:
+                        _emit_pretty(
+                            _state_label(s),
+                            _state_body(s, ctx["latest_spinner_text"]),
+                            ts=None,
+                        )
                     else:
-                        obj = {
-                            "stream": "spinner",
-                            "type": type(a).__name__,
-                            **dataclasses.asdict(a),
-                        }
-                    print(json.dumps(obj, ensure_ascii=False), flush=True)
+                        obj = json.loads(_state_to_json(s))
+                        obj["stream"] = "state"
+                        print(json.dumps(obj), flush=True)
+                    _emit_status(ctx)
 
-        await asyncio.gather(
-            pump_states(),
-            pump_events(),
-            pump_messages(),
-            pump_spinners(),
-        )
+            async def pump_events():
+                async for ev in b.events():
+                    # Update primary_sid in case session rebound (e.g., /clear).
+                    sid = (ev.get("claude") or {}).get("session_id")
+                    if sid:
+                        ctx["primary_sid"] = sid
+                    ctx["latest_hook_event"] = ev
+                    if pretty:
+                        _emit_pretty(
+                            _event_label(ev),
+                            _event_body(ev),
+                            ts=ev.get("timestamp"),
+                        )
+                    else:
+                        print(
+                            json.dumps({"stream": "event", **ev}, ensure_ascii=False),
+                            flush=True,
+                        )
+                    _emit_status(ctx)
+
+            async def pump_messages():
+                async for msg in b.transcript_items():
+                    if pretty:
+                        _emit_pretty(
+                            _message_label(msg),
+                            _message_body(msg),
+                            ts=msg.timestamp,
+                        )
+                    else:
+                        d = dataclasses.asdict(msg)
+                        if d.get("image_data"):
+                            import base64
+
+                            d["image_data"] = [
+                                (mt, base64.b64encode(bts).decode("ascii"))
+                                for (mt, bts) in d["image_data"]
+                            ]
+                        print(
+                            json.dumps({"stream": "message", **d}, ensure_ascii=False),
+                            flush=True,
+                        )
+                    # Refresh status so the hook "age" timestamp stays
+                    # current as messages stream in.
+                    _emit_status(ctx)
+
+            async def pump_spinners():
+                async for a in b.spinners():
+                    # Cache for state body inclusion.
+                    if a is not None and hasattr(a, "text"):
+                        ctx["latest_spinner_text"] = a.text
+                    elif a is None:
+                        ctx["latest_spinner_text"] = None
+                    ctx["latest_spinner_activity"] = a
+                    if pretty and not ctx["status_enabled"]:
+                        # When the status bar is active it already
+                        # shows the live spinner — skip the in-pane
+                        # spinner block to keep the scrolling log
+                        # free of spinner spam.
+                        _emit_pretty(
+                            _spinner_label(a),
+                            _spinner_body(a),
+                            ts=None,
+                            is_spinner=True,
+                        )
+                    elif not pretty:
+                        if a is None:
+                            obj = {"stream": "spinner", "type": "none"}
+                        else:
+                            obj = {
+                                "stream": "spinner",
+                                "type": type(a).__name__,
+                                **dataclasses.asdict(a),
+                            }
+                        print(json.dumps(obj, ensure_ascii=False), flush=True)
+                    _emit_status(ctx)
+
+            await asyncio.gather(
+                pump_states(),
+                pump_events(),
+                pump_messages(),
+                pump_spinners(),
+            )
+    finally:
+        # Always reset the scroll region — leaving DECSTBM set after
+        # exit would leave the user's shell unable to use the bottom
+        # rows. Runs on KeyboardInterrupt / exception too.
+        if sigwinch_installed:
+            try:
+                asyncio.get_running_loop().remove_signal_handler(signal.SIGWINCH)
+            except (AttributeError, NotImplementedError, ValueError, RuntimeError):
+                pass
+        _teardown_status(ctx)
     return 0
 
 
@@ -567,6 +808,7 @@ def cmd_watch(args) -> int:
                 args.session,
                 pretty=not args.json,
                 no_color=getattr(args, "no_color", False),
+                no_status=getattr(args, "no_status", False),
             )
         )
     except KeyboardInterrupt:
@@ -598,6 +840,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-color",
         action="store_true",
         help="Disable ANSI colors even on a TTY",
+    )
+    p_watch.add_argument(
+        "--no-status",
+        action="store_true",
+        help="Disable the bottom status bar (default: enabled on a TTY)",
     )
     p_watch.set_defaults(fn=cmd_watch)
 

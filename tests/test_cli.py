@@ -305,3 +305,109 @@ def test_color_for_label_known_heads():
     assert _color_for_label("IDLE") == _ANSI["green"]
     assert _color_for_label("WORKING") == _ANSI["yellow"]
     assert _color_for_label("") == ""
+
+
+# ---------------------------------------------------------------------------
+# Bottom status bar
+# ---------------------------------------------------------------------------
+
+
+def test_render_status_lines_with_state_and_spinner():
+    from ccmux_core.cli import _render_status_lines
+    from ccmux_core.state import Working
+
+    class _FakeActivity:
+        text = "Working on a thing"
+        todos = ()
+
+    lines = _render_status_lines(
+        state=Working(tool_name="Bash"),
+        latest_hook_event={
+            "event_type": "pre_tool_use",
+            "timestamp": "2026-05-12T06:30:00+00:00",
+            "payload": {"tool_name": "Bash"},
+        },
+        latest_spinner_activity=_FakeActivity(),
+        use_color=False,
+        width=80,
+    )
+    # at minimum: a state line, a hook line, a spinner line
+    assert any("WORKING(Bash)" in line for line in lines)
+    assert any("pre_tool_use" in line for line in lines)
+    assert any("Working on a thing" in line for line in lines)
+
+
+def test_render_status_lines_multi_line_spinner():
+    from ccmux_core.cli import _render_status_lines
+    from ccmux_core.state import Working
+
+    class _FakeActivity:
+        text = "line one\nline two\nline three"
+        todos = ()
+
+    lines = _render_status_lines(
+        state=Working(tool_name=None),
+        latest_hook_event=None,
+        latest_spinner_activity=_FakeActivity(),
+        use_color=False,
+        width=80,
+    )
+    assert any("line one" in line for line in lines)
+    assert any("line two" in line for line in lines)
+    assert any("line three" in line for line in lines)
+
+
+def test_render_status_lines_with_todos():
+    from ccmux_core.cli import _render_status_lines
+    from ccmux_core.state import Working
+
+    class _FakeActivity:
+        text = "Working"
+        todos = ("Run tests", "Check coverage", "Open PR")
+
+    lines = _render_status_lines(
+        state=Working(tool_name=None),
+        latest_hook_event=None,
+        latest_spinner_activity=_FakeActivity(),
+        use_color=False,
+        width=80,
+    )
+    # one line per todo
+    for todo in ("Run tests", "Check coverage", "Open PR"):
+        assert any(todo in line for line in lines), f"missing {todo!r}"
+
+
+def test_render_status_lines_handles_none_state():
+    from ccmux_core.cli import _render_status_lines
+
+    lines = _render_status_lines(
+        state=None,
+        latest_hook_event=None,
+        latest_spinner_activity=None,
+        use_color=False,
+        width=80,
+    )
+    # should still produce some lines without crashing
+    assert lines
+
+
+def test_status_separator_fills_width():
+    from ccmux_core.cli import _status_separator, _visual_width
+
+    sep = _status_separator(40)
+    # starts with the STATUS label
+    assert sep.startswith("─── STATUS")
+    # total visual width matches
+    assert _visual_width(sep) == 40
+
+
+def test_parser_watch_accepts_no_status():
+    p = build_parser()
+    args = p.parse_args(["watch", "ccmux", "--no-status"])
+    assert args.no_status is True
+
+
+def test_parser_watch_no_status_default_false():
+    p = build_parser()
+    args = p.parse_args(["watch", "ccmux"])
+    assert args.no_status is False
