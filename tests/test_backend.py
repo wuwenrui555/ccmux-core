@@ -848,3 +848,112 @@ async def test_trigger_safety_spinner_grace_flushes_pending_to_idle(tmp_path):
         text_calls = [a for a in sent_args if a and a[0] == "queued-A\n\nqueued-B"]
         assert text_calls, f"expected concatenated flush; got {sent_args}"
         assert b.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_interrupt_in_working_sends_esc_then_cu_and_clears_queue(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Working
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Working(tool_name="Bash")
+        b._pending = ["A", "B"]
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b.interrupt()
+        calls = [c.args for c in sk.call_args_list]
+        kwargs = [c.kwargs for c in sk.call_args_list]
+        # Esc and Ctrl-U both sent, both as named keys (literal=False)
+        esc_calls = [
+            (a, k)
+            for a, k in zip(calls, kwargs, strict=False)
+            if a and a[0] == "Escape"
+        ]
+        cu_calls = [
+            (a, k) for a, k in zip(calls, kwargs, strict=False) if a and a[0] == "C-u"
+        ]
+        assert esc_calls, f"expected Escape; got {calls}"
+        assert cu_calls, f"expected C-u; got {calls}"
+        # queue cleared
+        assert b.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_interrupt_in_working_esc_precedes_cu(tmp_path):
+    """Ordering: Esc must be sent BEFORE C-u, otherwise the
+    restored prompt wouldn't be in the buffer to clear."""
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Working
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Working(tool_name=None)
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b.interrupt()
+        names = [c.args[0] for c in sk.call_args_list if c.args]
+        # find indices of Escape and C-u
+        i_esc = names.index("Escape")
+        i_cu = names.index("C-u")
+        assert i_esc < i_cu, f"Escape should precede C-u; got {names}"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_in_idle_is_noop(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Idle
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Idle(reason="stop")
+        b._pending = ["X"]
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b.interrupt()
+        sk.assert_not_called()
+        # queue NOT cleared in non-Working states
+        assert b.pending_count == 1
+
+
+@pytest.mark.asyncio
+async def test_interrupt_in_blocked_is_noop(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(kind="permission", tool_name="Bash", tool_input={})
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b.interrupt()
+        sk.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_in_dead_is_noop(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Dead
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Dead(reason="session_end")
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b.interrupt()
+        sk.assert_not_called()

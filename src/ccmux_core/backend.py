@@ -295,6 +295,22 @@ class Backend:
             # state is None (pre-live-phase): queue
             self._pending.append(text)
 
+    async def interrupt(self) -> None:
+        """Abort the current Working state and clear the pending queue.
+
+        No-op outside Working. Sends Esc (which causes claude code to
+        restore the prompt to the TUI input buffer) followed by Ctrl-U
+        (clears that buffer so future send_prompt isn't appended onto
+        leftover text), then clears self._pending.
+        """
+        from .state import Working
+
+        if not isinstance(self._state, Working):
+            return
+        await self.send_keys("Escape", literal=False)
+        await self.send_keys("C-u", literal=False)
+        self._pending.clear()
+
     async def _flush_pending(self, *, new_state: State | None) -> None:
         """Called whenever we emit a new state. If the new state is
         Idle and the queue is non-empty, send the queued prompts as
