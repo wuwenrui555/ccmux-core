@@ -488,13 +488,16 @@ def _render_status_lines(
         out.append("")  # body placeholder
     else:
         ev_ts = _ts_short(latest_hook_event.get("timestamp"))
+        # Skip the state slot in the header — state already lives on
+        # its own dedicated line above, so embedding it here would
+        # duplicate (and produce e.g. '[ ... · IDLE(stop) ] EVENT · stop').
         hook_header = _header(
             ts=ev_ts,
             tmux_session=tmux_session,
             window_id=window_id,
             primary_sid=primary_sid,
             label=_event_label(latest_hook_event),
-            state=state,
+            state=None,
             use_color=use_color,
         )
         hook_body = _event_body(latest_hook_event)
