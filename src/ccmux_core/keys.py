@@ -10,7 +10,10 @@ Task 8 adds the TIOCSTI fallback for copy-mode-aware injection.
 
 from __future__ import annotations
 
+import fcntl
+import os
 import subprocess
+import termios
 
 from .error import BackendError
 
@@ -50,3 +53,79 @@ def send_via_tmux(
         raise KeyInjectionError(
             f"tmux send-keys failed for pane {pane_id!r}: " f"{result.stderr.strip()}"
         )
+
+
+# Fixed map: tmux key name → raw bytes for TIOCSTI injection.
+# Only the keys ccmux-core emits are included.
+KEYNAME_TO_BYTES: dict[str, bytes] = {
+    "Enter": b"\r",
+    "Return": b"\r",
+    "Escape": b"\x1b",
+    "Esc": b"\x1b",
+    "Tab": b"\t",
+    "Space": b" ",
+    "C-a": b"\x01",
+    "C-k": b"\x0b",
+    "C-u": b"\x15",
+    "Up": b"\x1b[A",
+    "Down": b"\x1b[B",
+    "Right": b"\x1b[C",
+    "Left": b"\x1b[D",
+}
+
+
+def _get_pane_tty(pane_id: str) -> str:
+    """Look up the pty path for a tmux pane (e.g. '/dev/pts/42')."""
+    result = subprocess.run(
+        ["tmux", "display", "-t", pane_id, "-p", "#{pane_tty}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise KeyInjectionError(
+            f"tmux display(pane_tty) failed for {pane_id!r}: "
+            f"{result.stderr.strip()}"
+        )
+    tty = result.stdout.strip()
+    if not tty:
+        raise KeyInjectionError(f"pane {pane_id!r} has no pane_tty")
+    return tty
+
+
+def _encode_keys(keys: list[str], literal: bool) -> bytes:
+    """Convert key names / literal text to raw bytes for TIOCSTI."""
+    out = b""
+    for key in keys:
+        if literal:
+            out += key.encode("utf-8")
+        else:
+            if key not in KEYNAME_TO_BYTES:
+                raise KeyInjectionError(f"unknown key name: {key!r}")
+            out += KEYNAME_TO_BYTES[key]
+    return out
+
+
+def send_via_tiocsti(
+    pane_id: str,
+    keys: str | list[str],
+    *,
+    literal: bool,
+) -> None:
+    """Inject keys into a pane's pty via TIOCSTI, bypassing tmux.
+
+    Works regardless of copy mode. Each byte is injected with a
+    separate ``ioctl(TIOCSTI, b)`` call.
+    """
+    if isinstance(keys, str):
+        keys = [keys]
+    data = _encode_keys(keys, literal=literal)
+    tty = _get_pane_tty(pane_id)
+    fd = os.open(tty, os.O_RDWR | os.O_NOCTTY)
+    try:
+        for b in data:
+            fcntl.ioctl(fd, termios.TIOCSTI, bytes([b]))
+    except OSError as e:
+        raise KeyInjectionError(f"TIOCSTI ioctl failed on {tty}: {e}") from e
+    finally:
+        os.close(fd)
