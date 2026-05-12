@@ -22,8 +22,8 @@ from datetime import UTC, datetime
 
 from . import __version__
 from .backend import Backend
+from .bindings import TmuxBinding, list_live_tmux_bindings
 from .config import pretty_width as _pretty_width
-from .discover import TmuxBinding, list_live_tmux_bindings
 from .state import Blocked, Dead, Idle, State, Working
 
 _PRETTY_TRUNCATION_MARKER = "..."
@@ -49,7 +49,7 @@ def _bindings_table(bindings: list[TmuxBinding]) -> str:
             b.tmux_session,
             b.pane_id,
             b.window_id,
-            b.primary_session_id,
+            b.current_session_id or "",
             b.last_event_at,
         ]
         for b in bindings
@@ -69,6 +69,18 @@ def cmd_list(args) -> int:
 
 def cmd_version(args) -> int:
     print(__version__)
+    return 0
+
+
+def cmd_bindings_snapshot(args) -> int:
+    from pathlib import Path
+
+    from .bindings import snapshot
+
+    output = Path(args.output).expanduser() if args.output else None
+    count = snapshot(bindings_path=output)
+    target = output if output is not None else "~/.ccmux-core/bindings.json"
+    print(f"wrote {count} bindings to {target}", file=sys.stderr)
     return 0
 
 
@@ -992,7 +1004,7 @@ async def _watch_async(
     ctx = {
         "tmux_session": match.tmux_session,
         "window_id": match.window_id,
-        "primary_sid": match.primary_session_id,
+        "primary_sid": match.current_session_id,
         "latest_spinner_text": None,  # type: str | None
         "current_state": None,  # type: State | None
         # In-place spinner-refresh state. ``last_emit_was_spinner`` is
@@ -1275,6 +1287,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_version = sub.add_parser("version", help="Print package version")
     p_version.set_defaults(fn=cmd_version)
+
+    p_bindings = sub.add_parser(
+        "bindings", help="Inspect or rebuild the bindings cache file"
+    )
+    bindings_sub = p_bindings.add_subparsers(dest="bindings_cmd")
+    p_bindings_snapshot = bindings_sub.add_parser(
+        "snapshot",
+        help="One-shot full scan of events.jsonl, rewrite bindings.json",
+    )
+    p_bindings_snapshot.add_argument(
+        "--output",
+        default=None,
+        help="Override the default ~/.ccmux-core/bindings.json path",
+    )
+    p_bindings_snapshot.set_defaults(fn=cmd_bindings_snapshot)
 
     return p
 

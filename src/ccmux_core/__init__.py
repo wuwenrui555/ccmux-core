@@ -21,7 +21,7 @@ See the L2 design spec for the dedup table and state-guard rules.
 from . import config as _config  # noqa: F401  (import for side effect)
 from ._version import __version__
 from .backend import Backend
-from .discover import (
+from .bindings import (
     TmuxBinding,
     discover_tmux_sessions,
     list_live_tmux_bindings,
