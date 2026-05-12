@@ -549,6 +549,78 @@ async def test_backend_grace_does_not_fire_while_pane_changes_without_spinner(
                 pass
 
 
+# ---------------------------------------------------------------------------
+# L1 messages() tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_messages_emits_user_prompt_from_event(monkeypatch):
+    """user_prompt_submit event → UserPrompt L1 message."""
+    import ccmux_core.backend as bk
+    from ccmux_core.message import UserPrompt
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", ts=later_ts),
+        _ev("user_prompt_submit", payload={"prompt": "hello"}, ts=later_ts),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+        msgs = []
+
+        async def collect():
+            async for m in b.messages():
+                msgs.append(m)
+                if len(msgs) >= 1:
+                    return
+
+        await asyncio.wait_for(collect(), timeout=2.0)
+
+    assert len(msgs) == 1
+    assert isinstance(msgs[0], UserPrompt)
+    assert msgs[0].text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_messages_emits_permission_request_from_event(monkeypatch):
+    """permission_request event → PermissionRequest L1 message."""
+    import ccmux_core.backend as bk
+    from ccmux_core.message import PermissionRequest
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", ts=later_ts),
+        _ev(
+            "permission_request",
+            payload={
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+                "request_id": "r-1",
+            },
+            ts=later_ts,
+        ),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+        msgs = []
+
+        async def collect():
+            async for m in b.messages():
+                msgs.append(m)
+                if len(msgs) >= 1:
+                    return
+
+        await asyncio.wait_for(collect(), timeout=2.0)
+
+    assert len(msgs) == 1
+    assert isinstance(msgs[0], PermissionRequest)
+    assert msgs[0].tool_name == "Bash"
+    assert msgs[0].tool_input == {"command": "ls"}
+
+
 @pytest.mark.asyncio
 async def test_backend_grace_fires_when_pane_static_and_no_spinner(monkeypatch):
     """Esc-after-streaming case: SpinnerMonitor.current is non-Spinner

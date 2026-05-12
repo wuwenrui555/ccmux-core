@@ -31,6 +31,11 @@ from claude_tap import ClaudeMessage, EventStream, MessageStream
 from claude_tap.config import events_path as _default_events_path
 
 from . import config
+from .message import (
+    Message,
+    PermissionRequest,
+    UserPrompt,
+)
 from .state import Dead, State, Working
 from .state_machine import StateMachineStep, apply, apply_safety_net
 
@@ -109,6 +114,10 @@ class Backend:
         self._events_q: asyncio.Queue = asyncio.Queue()
         self._messages_q: asyncio.Queue = asyncio.Queue()
         self._spinners_q: asyncio.Queue = asyncio.Queue()
+        # L1 normalized message stream: fan-in of `events` (UserPrompt,
+        # PermissionRequest) + `transcript_items` (AssistantText,
+        # ToolCall, ToolResult). See module docstring + L2 design spec.
+        self._l1_messages_q: asyncio.Queue = asyncio.Queue()
 
         self._subscribe_unix: float = 0.0
         self._live_phase_event = asyncio.Event()
@@ -149,7 +158,13 @@ class Backend:
                 t.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
-        for q in (self._states_q, self._events_q, self._messages_q, self._spinners_q):
+        for q in (
+            self._states_q,
+            self._events_q,
+            self._messages_q,
+            self._spinners_q,
+            self._l1_messages_q,
+        ):
             q.put_nowait(_END)
 
     async def states(self) -> AsyncIterator[State]:
@@ -179,6 +194,26 @@ class Backend:
         """
         while True:
             item = await self._messages_q.get()
+            if item is _END:
+                return
+            yield item
+
+    async def messages(self) -> AsyncIterator[Message]:
+        """L1 normalized message stream (dedup'd from events + transcript).
+
+        Each :class:`Message` kind is sourced from exactly one upstream
+        channel per the L2 design dedup table:
+
+        * ``UserPrompt`` / ``PermissionRequest`` — from
+          :meth:`events` (``user_prompt_submit`` / ``permission_request``).
+        * ``AssistantText`` / ``ToolCall`` / ``ToolResult`` — from
+          :meth:`transcript_items` (claude-tap ``ClaudeMessage``).
+
+        ``Notification`` events are deliberately excluded — they are
+        control-plane signals, not conversational content.
+        """
+        while True:
+            item = await self._l1_messages_q.get()
             if item is _END:
                 return
             yield item
@@ -225,6 +260,27 @@ class Backend:
                     self._events_q.put_nowait(ev)
                     if step.emit and step.new_state is not None:
                         self._states_q.put_nowait(step.new_state)
+                    # L1 message fan-out: synthesize UserPrompt /
+                    # PermissionRequest from the event stream (see
+                    # dedup table in the L2 design spec). Other L1
+                    # kinds are sourced from transcript items.
+                    et = ev.get("event_type", "")
+                    payload = ev.get("payload") or {}
+                    if et == "user_prompt_submit":
+                        self._l1_messages_q.put_nowait(
+                            UserPrompt(
+                                text=payload.get("prompt", "") or "",
+                                timestamp=event_unix,
+                            )
+                        )
+                    elif et == "permission_request":
+                        self._l1_messages_q.put_nowait(
+                            PermissionRequest(
+                                tool_name=payload.get("tool_name", "") or "",
+                                tool_input=payload.get("tool_input") or {},
+                                timestamp=event_unix,
+                            )
+                        )
                     if isinstance(step.new_state, Dead):
                         self._stopped.set()
                         return
