@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from ccmux_core.bindings import TmuxBinding
 from ccmux_core.cli import (
     _bindings_table,
     _event_body,
@@ -15,7 +16,6 @@ from ccmux_core.cli import (
     _state_to_json,
     build_parser,
 )
-from ccmux_core.discover import TmuxBinding
 from ccmux_core.state import Blocked, Dead, Idle, Working
 
 

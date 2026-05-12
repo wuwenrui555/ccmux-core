@@ -22,8 +22,8 @@ from datetime import UTC, datetime
 
 from . import __version__
 from .backend import Backend
+from .bindings import TmuxBinding, list_live_tmux_bindings
 from .config import pretty_width as _pretty_width
-from .discover import TmuxBinding, list_live_tmux_bindings
 from .state import Blocked, Dead, Idle, State, Working
 
 _PRETTY_TRUNCATION_MARKER = "..."

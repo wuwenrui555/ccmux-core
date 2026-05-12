@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from ccmux_core.discover import (
+from ccmux_core.bindings import (
     TmuxBinding,
     discover_tmux_sessions,
     list_live_tmux_bindings,
