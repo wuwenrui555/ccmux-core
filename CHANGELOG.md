@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — bindings tracker
+
+- `~/.ccmux-core/bindings.json` derived live cache of tmux ↔ Claude
+  bindings, written incrementally by the new `BindingsTracker`
+  async context manager and rebuildable on demand via the
+  `ccmux-core bindings snapshot` CLI. Schema preserves
+  `session_id_history` through `session_end` / `/clear` so users
+  can `claude --resume <sid>` after an abnormal reboot.
+  Atomic writes via `os.replace` + `fcntl.flock`; no `fsync`
+  (snapshot is the recovery path).
+
+### Changed (breaking)
+
+- `discover` module is renamed to `bindings`. The `ccmux_core`
+  package re-exports keep working without source changes for direct
+  consumers of `TmuxBinding` / `list_live_tmux_bindings` /
+  `discover_tmux_sessions`.
+- `TmuxBinding` widens from 5 to 8 fields. `primary_session_id` is
+  renamed to `current_session_id`. New fields:
+  `session_id_history: tuple[str, ...]`, `first_seen_at: str`,
+  `ended_at: str | None`.
+- `list_live_tmux_bindings()` keeps its observable contract (returns
+  only sessions with an attached Claude) but now implements it as a
+  filter over the preserve-mode fold; the underlying dict retains
+  ended entries with `current_session_id=None`.
+
 ## [0.2.0] - 2026-05-12
 
 Breaking change: from a four-stream observation library to a
