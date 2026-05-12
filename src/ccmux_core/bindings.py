@@ -231,12 +231,16 @@ def _step(bindings: dict[str, _MutableBinding], event: dict) -> None:
         reason = payload.get("reason", "")
         if reason == "clear":
             b.current_session_id = None
+            b.ended_at = ts
             b.last_event_at = ts
             return
         if reason == "prompt_input_exit":
             b.last_event_at = ts
             return
-        del bindings[tmux_session]
+        # Other reason (clean exit, etc.) — preserve entry, mark ended.
+        b.current_session_id = None
+        b.ended_at = ts
+        b.last_event_at = ts
         return
 
     if b is None:

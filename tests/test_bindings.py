@@ -140,7 +140,7 @@ def test_prompt_input_exit_keeps_primary(tmp_path):
     assert out[0].current_session_id == "S1"
 
 
-def test_fatal_session_end_removes_binding(tmp_path):
+def test_fatal_session_end_excludes_from_live_list(tmp_path):
     p = tmp_path / "events.jsonl"
     _write_events(
         p,
@@ -149,7 +149,23 @@ def test_fatal_session_end_removes_binding(tmp_path):
             _ev("session_end", "S1", payload={"reason": "error"}),
         ],
     )
+    # Observable behavior unchanged: list_live filters out ended sessions
+    # even though the internal dict now preserves the entry.
     assert list_live_tmux_bindings(events_path=p) == []
+
+
+def test_session_end_preserves_entry():
+    from ccmux_core.bindings import _MutableBinding, _step
+
+    bindings: dict[str, _MutableBinding] = {}
+    _step(bindings, _ev("session_start", "S1", ts="T1"))
+    _step(bindings, _ev("session_end", "S1", payload={"reason": "exit"}, ts="T2"))
+
+    assert "ccmux" in bindings, "entry must be preserved after session_end"
+    entry = bindings["ccmux"]
+    assert entry.current_session_id is None
+    assert entry.ended_at == "T2"
+    assert entry.session_id_history == ["S1"]
 
 
 def test_pane_id_follows_latest_event(tmp_path):
