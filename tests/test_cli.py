@@ -195,15 +195,41 @@ def test_event_body_user_prompt_submit_shows_prompt():
     assert _event_body(ev) == "hello\\nworld"
 
 
-def test_header_layout():
-    out = _header(
-        ts="03:38:08",
+def test_header_layout_no_tmux_or_sid():
+    """Per-block headers no longer carry tmux/sid — those live in the
+    fixed top header above the scroll region (`_top_header`)."""
+    out = _header(ts="03:38:08", label="WORKING")
+    assert out == "[ 03:38:08 ] WORKING"
+
+
+def test_top_header_includes_session_and_sid():
+    from ccmux_core.cli import _top_header
+
+    out = _top_header(
         tmux_session="ccmux",
         window_id="@80",
         primary_sid="504921bb-1a7e",
-        label="WORKING",
+        width=50,
     )
-    assert out == "[ 03:38:08 ccmux@80 504921bb ] WORKING"
+    assert out.startswith("─── ccmux@80  504921bb ")
+    # padded to full width
+    from ccmux_core.cli import _visual_width
+
+    assert _visual_width(out) == 50
+
+
+def test_top_header_bold_when_color_enabled():
+    from ccmux_core.cli import _ANSI, _top_header
+
+    out = _top_header(
+        tmux_session="ccmux",
+        window_id="@80",
+        primary_sid="504921bb",
+        width=40,
+        use_color=True,
+    )
+    assert _ANSI["bold"] in out
+    assert _ANSI["reset"] in out
 
 
 # ---------------------------------------------------------------------------
@@ -297,14 +323,11 @@ def test_header_with_state_slot():
 
     out = _header(
         ts="12:34:56",
-        tmux_session="ccmux",
-        window_id="@80",
-        primary_sid="504921bb-...-...",
         label="ASSISTANT · hook",
         state=Working(tool_name="Bash"),
         use_color=False,
     )
-    assert "[ 12:34:56 ccmux@80 504921bb · WORKING(Bash) ] ASSISTANT · hook" == out
+    assert out == "[ 12:34:56 · WORKING(Bash) ] ASSISTANT · hook"
 
 
 def test_header_omits_state_slot_when_none():
@@ -312,14 +335,11 @@ def test_header_omits_state_slot_when_none():
 
     out = _header(
         ts="12:34:56",
-        tmux_session="ccmux",
-        window_id="@80",
-        primary_sid="504921bb",
         label="EVENT · session_start",
         state=None,
         use_color=False,
     )
-    assert "[ 12:34:56 ccmux@80 504921bb ] EVENT · session_start" == out
+    assert out == "[ 12:34:56 ] EVENT · session_start"
 
 
 def test_header_with_color_wraps_state_and_label():
@@ -328,9 +348,6 @@ def test_header_with_color_wraps_state_and_label():
 
     out = _header(
         ts="12:34:56",
-        tmux_session="ccmux",
-        window_id="@80",
-        primary_sid="504921bb",
         label="IDLE",
         state=Idle(reason="stop"),
         use_color=True,

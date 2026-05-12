@@ -250,28 +250,59 @@ def _paint(text: str, color: str, *, enabled: bool) -> str:
 def _header(
     *,
     ts: str,
-    tmux_session: str,
-    window_id: str | None,
-    primary_sid: str | None,
     label: str,
     state: State | None = None,
     use_color: bool = False,
+    # Backward-compat: callers from before the top-header refactor may
+    # still pass these; they're ignored. New code should not set them.
+    tmux_session: str | None = None,
+    window_id: str | None = None,
+    primary_sid: str | None = None,
 ) -> str:
-    """``[ HH:MM:SS ccmux@80 504921bb · WORKING(Bash) ] LABEL``.
+    """``[ HH:MM:SS · WORKING(Bash) ] LABEL``.
 
-    The state slot (after the sid, separated by `` · ``) is omitted when
-    ``state is None`` to keep the legacy layout for the first emit before
-    any state has arrived. When ``use_color`` is true, the state slot and
-    the label are wrapped in ANSI color escapes.
+    Compact per-block header. The tmux session / window / sid are
+    NOT included anymore — those live in the fixed top header above
+    the scroll region (``_top_header``). The state slot is omitted
+    when ``state is None`` so we don't display ``· (waiting)`` clutter
+    before any state has been observed.
+
+    When ``use_color`` is true, the state slot and the label are
+    wrapped in ANSI color escapes.
     """
-    sid = (primary_sid or "")[:8] or "--------"
-    tmux_frag = f"{tmux_session}{window_id or ''}"
+    # tmux_session / window_id / primary_sid intentionally unused —
+    # see docstring above. Kept in the signature for backward compat
+    # with old callers (tests that haven't been updated yet).
+    _ = (tmux_session, window_id, primary_sid)
     label_painted = _paint(label, _color_for_label(label), enabled=use_color)
     if state is None:
-        return f"[ {ts} {tmux_frag} {sid} ] {label_painted}"
+        return f"[ {ts} ] {label_painted}"
     summary = _state_summary(state)
     summary_painted = _paint(summary, _color_for_state(state), enabled=use_color)
-    return f"[ {ts} {tmux_frag} {sid} · {summary_painted} ] {label_painted}"
+    return f"[ {ts} · {summary_painted} ] {label_painted}"
+
+
+def _top_header(
+    tmux_session: str,
+    window_id: str | None,
+    primary_sid: str | None,
+    width: int,
+    *,
+    use_color: bool = False,
+) -> str:
+    """``─── ccmux@80  504921bb ──────────...``.
+
+    Drawn ONCE at the top of the scroll viewport so each per-block
+    header doesn't need to repeat the session / sid. Width-padded to
+    fill the line."""
+    sid = (primary_sid or "")[:8] or "--------"
+    tmux_frag = f"{tmux_session}{window_id or ''}"
+    label = f"─── {tmux_frag}  {sid} "
+    fill_count = max(0, width - _visual_width(label))
+    line = label + "─" * fill_count
+    if use_color:
+        return f"{_ANSI['bold']}{line}{_ANSI['reset']}"
+    return line
 
 
 # ----- per-stream formatters --------------------------------------------
@@ -651,16 +682,39 @@ def _emit_status(ctx: dict) -> None:
 
     out: list[str] = []
 
+    # Reserve 2 rows at the TOP for the session header
+    # (line 1: "─── session sid ──...", line 2: blank).
+    top_reserved = 2
+
+    # Always re-draw the top header (cheap; covers terminal resize).
+    out.append("\x1b[s")
+    out.append("\x1b[1;1H")
+    out.append("\x1b[2K")
+    out.append(
+        _top_header(
+            ctx["tmux_session"],
+            ctx["window_id"],
+            ctx["primary_sid"],
+            cols,
+            use_color=ctx["color_enabled"],
+        )
+    )
+    out.append("\x1b[2;1H")
+    out.append("\x1b[2K")
+    out.append("\x1b[u")
+
     # If height changed, re-scope scroll region.
     if new_height != old_height:
         out.append("\x1b[s")
         out.append("\x1b[r")  # reset region so we can clear old area
         if old_height > 0:
-            old_start = max(1, rows - old_height + 1)
+            old_start = max(top_reserved + 1, rows - old_height + 1)
             out.append(f"\x1b[{old_start};1H")
             out.append("\x1b[J")
-        scroll_bottom = max(1, rows - new_height)
-        out.append(f"\x1b[1;{scroll_bottom}r")
+        # Scroll region excludes both the top header rows and the status bar rows.
+        scroll_top = top_reserved + 1
+        scroll_bottom = max(scroll_top, rows - new_height)
+        out.append(f"\x1b[{scroll_top};{scroll_bottom}r")
         ctx["status_height"] = new_height
         out.append("\x1b[u")
 
@@ -795,7 +849,10 @@ async def _watch_async(
     # mode should not clobber the parent terminal.
     if ctx["status_enabled"]:
         # \x1b[H = cursor home, \x1b[2J = erase display, \x1b[3J = erase scrollback.
-        sys.stdout.write("\x1b[H\x1b[2J\x1b[3J")
+        # Then park cursor at row 3 (below the 2-row top header that
+        # _emit_status will draw) so the first log block lands in
+        # the scroll region rather than clobbering the top header.
+        sys.stdout.write("\x1b[H\x1b[2J\x1b[3J\x1b[3;1H")
         sys.stdout.flush()
 
     # Install SIGWINCH so the bar re-renders to the new size on
