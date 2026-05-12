@@ -401,6 +401,68 @@ def test_load_bindings_reads_well_formed_file(tmp_path):
     assert load_bindings(path) == payload
 
 
+@pytest.mark.asyncio
+async def test_tracker_writes_on_session_start(tmp_path, monkeypatch):
+    from ccmux_core.bindings import BindingsTracker, load_bindings
+
+    events = tmp_path / "events.jsonl"
+    events.write_text("")
+    bindings_path = tmp_path / "bindings.json"
+    lock_path = tmp_path / "bindings.lock"
+
+    async with BindingsTracker(
+        events_path=events,
+        bindings_path=bindings_path,
+        lock_path=lock_path,
+    ):
+        # Append a session_start event after tracker enters
+        events.write_text(json.dumps(_ev("session_start", "S1", ts="T1")) + "\n")
+        # Give the tail coroutine a moment to pick it up
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            if bindings_path.exists():
+                data = load_bindings(bindings_path)
+                if "ccmux" in data:
+                    break
+        else:
+            raise AssertionError("tracker did not write within 1s")
+
+    data = load_bindings(bindings_path)
+    assert data["ccmux"]["current_session_id"] == "S1"
+
+
+@pytest.mark.asyncio
+async def test_tracker_seeks_to_eof_on_start(tmp_path):
+    """Pre-existing events written before the tracker starts must NOT be folded."""
+    from ccmux_core.bindings import BindingsTracker, load_bindings
+
+    events = tmp_path / "events.jsonl"
+    # Pre-existing event
+    events.write_text(json.dumps(_ev("session_start", "OLD", ts="T0")) + "\n")
+    bindings_path = tmp_path / "bindings.json"
+    lock_path = tmp_path / "bindings.lock"
+
+    async with BindingsTracker(
+        events_path=events,
+        bindings_path=bindings_path,
+        lock_path=lock_path,
+    ):
+        # Append a fresh event after start
+        with events.open("a") as f:
+            f.write(
+                json.dumps(_ev("session_start", "NEW", tmux="other", ts="T1")) + "\n"
+            )
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            data = load_bindings(bindings_path)
+            if "other" in data:
+                break
+
+    data = load_bindings(bindings_path)
+    assert "other" in data, "post-start event must be folded"
+    assert "ccmux" not in data, "pre-existing event must be skipped (seek to EOF)"
+
+
 def test_snapshot_writes_current_bindings(tmp_path):
     from ccmux_core.bindings import load_bindings, snapshot
 
