@@ -337,7 +337,7 @@ def test_render_status_lines_with_state_and_spinner():
     assert any("Working on a thing" in line for line in lines)
 
 
-def test_render_status_lines_multi_line_spinner():
+def test_render_status_lines_multi_line_spinner_takes_first_line_only():
     from ccmux_core.cli import _render_status_lines
     from ccmux_core.state import Working
 
@@ -350,11 +350,12 @@ def test_render_status_lines_multi_line_spinner():
         latest_hook_event=None,
         latest_spinner_activity=_FakeActivity(),
         use_color=False,
-        width=80,
+        width=120,
     )
     assert any("line one" in line for line in lines)
-    assert any("line two" in line for line in lines)
-    assert any("line three" in line for line in lines)
+    # only the first line is rendered now; the rest are dropped
+    assert not any("line two" in line for line in lines)
+    assert not any("line three" in line for line in lines)
 
 
 def test_render_status_lines_with_todos():
@@ -423,8 +424,8 @@ def test_status_separator_uncolored_when_state_is_none():
         assert _ANSI[k] not in sep
 
 
-def test_render_status_lines_emits_todos_verbatim_without_extra_marker():
-    """spinner.todos already carry ⎿ / ◻ / ✔; we must not prepend ☐."""
+def test_render_status_lines_emits_todos_as_json_array_single_line():
+    """spinner.todos are emitted as one json.dumps line, not one-per-line."""
     from ccmux_core.cli import _render_status_lines
     from ccmux_core.state import Working
 
@@ -437,13 +438,49 @@ def test_render_status_lines_emits_todos_verbatim_without_extra_marker():
         latest_hook_event=None,
         latest_spinner_activity=_FakeActivity(),
         use_color=False,
-        width=120,
+        width=200,
     )
-    # each todo string appears verbatim, somewhere in the output
+    # all three todos appear inside a single json line
+    todos_lines = [
+        line for line in lines if line.startswith("[") and "Item one" in line
+    ]
+    assert len(todos_lines) == 1, f"expected 1 json'd todos line; got: {todos_lines}"
+    todos_line = todos_lines[0]
     for todo in ("⎿  ◻ Item one", "   ✔ Item two", "    … +17 completed"):
-        assert todo in lines, f"missing verbatim todo {todo!r}"
-    # ☐ MUST NOT have been prepended by our renderer
-    assert not any(line.startswith("  ☐") for line in lines)
+        assert todo in todos_line, f"missing {todo!r} in {todos_line!r}"
+
+
+def test_render_status_lines_always_returns_8_rows():
+    from ccmux_core.cli import _render_status_lines
+
+    # No state, no hook, no spinner
+    lines = _render_status_lines(
+        state=None,
+        latest_hook_event=None,
+        latest_spinner_activity=None,
+        use_color=False,
+        width=80,
+    )
+    assert len(lines) == 8
+
+
+def test_render_status_lines_8_rows_even_with_todos():
+    from ccmux_core.cli import _render_status_lines
+    from ccmux_core.state import Working
+
+    class _FakeActivity:
+        text = "Working"
+        todos = tuple(f"todo {i}" for i in range(20))  # lots of todos
+
+    lines = _render_status_lines(
+        state=Working(tool_name="Bash"),
+        latest_hook_event=None,
+        latest_spinner_activity=_FakeActivity(),
+        use_color=False,
+        width=300,
+    )
+    # 8 rows regardless of how many todos
+    assert len(lines) == 8
 
 
 def test_parser_watch_accepts_no_status():

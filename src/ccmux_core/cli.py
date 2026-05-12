@@ -484,95 +484,83 @@ def _render_status_lines(
     window_id: str | None = None,
     primary_sid: str | None = None,
 ) -> list[str]:
-    """Render status bar content as a list of lines (no leading separator).
+    """Returns exactly 8 content lines for the fixed 10-row status bar.
 
-    Layout::
-
-        (blank)
-        state=<STATE_SUMMARY>
-        (blank)
-        [ HH:MM:SS tmux@win sid · STATE ] EVENT · <event_type>
-        <event body>
-        (blank)
-        spinner=<line1>
-                <line2>  (if multi-line)
-        <todo line 1, verbatim from spinner.todos>
-        <todo line 2, verbatim from spinner.todos>
-
-    Returns one line per row, NOT including the top separator. Each
-    line is plain text trimmed to ``width`` visual columns.
+    Layout (combined with the separator + leading blank prepended by
+    _emit_status):
+      1: blank                              ← prepended
+      2: separator                          ← prepended
+      3: state=<SUMMARY>                    ← lines[0]
+      4: (blank)                            ← lines[1]
+      5: [ ts tmux@win sid ] EVENT · type   ← lines[2]
+      6: <event body>  (Xs ago)             ← lines[3]
+      7: (blank)                            ← lines[4]
+      8: spinner=<first line>               ← lines[5]
+      9: <todos as json.dumps([...])> or ""  ← lines[6]
+      10: (blank)                           ← lines[7]
     """
-    out: list[str] = []
-
-    # --- blank --
-    out.append("")
-
-    # --- state line ---
+    # state
     if state is None:
-        state_line = "state=(waiting)"
+        summary = "(waiting)"
+        state_color = ""
     else:
         summary = _state_summary(state)
-        if use_color:
-            color = _color_for_state(state)
-            summary = _paint(summary, color, enabled=True)
+        state_color = _color_for_state(state) if use_color else ""
+    if use_color and state_color:
+        state_line = f"state={_paint(summary, state_color, enabled=True)}"
+    else:
         state_line = f"state={summary}"
-    out.append(state_line)
 
-    # --- blank ---
-    out.append("")
-
-    # --- hook event block (2 lines: header + body) ---
+    # hook (2 rows: header + body, always present)
     if latest_hook_event is None:
-        out.append("(no hook events yet)")
-        out.append("")  # body placeholder
+        hook_header = "(no hook events yet)"
+        hook_body = ""
     else:
         ev_ts = _ts_short(latest_hook_event.get("timestamp"))
-        # Skip the state slot in the header — state already lives on
-        # its own dedicated line above, so embedding it here would
-        # duplicate (and produce e.g. '[ ... · IDLE(stop) ] EVENT · stop').
         hook_header = _header(
             ts=ev_ts,
             tmux_session=tmux_session,
             window_id=window_id,
             primary_sid=primary_sid,
             label=_event_label(latest_hook_event),
-            state=None,
+            state=None,  # state is on its own line; don't duplicate
             use_color=use_color,
         )
         hook_body = _event_body(latest_hook_event)
-        # Append the age suffix to the body so the user can still see
-        # how long ago the hook fired (the header has the event's own
-        # timestamp; age gives quick relative reference).
         age = _hook_age_seconds(latest_hook_event.get("timestamp"))
         if age is not None:
             hook_body = f"{hook_body}  ({age}s ago)" if hook_body else f"({age}s ago)"
-        out.append(hook_header)
-        out.append(hook_body)
 
-    # --- blank ---
-    out.append("")
-
-    # --- spinner block ---
+    # spinner single line (collapse multi-line text to its first line)
     if latest_spinner_activity is None:
-        out.append("spinner=(none)")
+        spinner_line = "spinner=(none)"
     else:
         text = getattr(latest_spinner_activity, "text", "") or ""
-        spinner_lines = text.split("\n")
-        if not spinner_lines:
-            spinner_lines = [""]
-        out.append(f"spinner={spinner_lines[0]}")
-        for cont in spinner_lines[1:]:
-            out.append(f"        {cont}")
+        first = text.split("\n", 1)[0] if text else ""
+        spinner_line = f"spinner={first}"
 
-        # ccmux-spinner's Spinner.todos is tuple[str, ...] where each
-        # string already carries claude TUI's native markers
-        # (⎿ / ◻ / ✔ / "… +N completed"). Emit verbatim — prepending
-        # our own ☐ here would double-mark every line.
-        for item in getattr(latest_spinner_activity, "todos", ()) or ():
-            text_part = getattr(item, "text", None) or str(item)
-            out.append(text_part)
+    # todos single line as json.dumps; "" when no todos
+    if latest_spinner_activity is None:
+        todos_line = ""
+    else:
+        todos = getattr(latest_spinner_activity, "todos", ()) or ()
+        if todos:
+            todo_strs = [getattr(t, "text", None) or str(t) for t in todos]
+            todos_line = json.dumps(todo_strs, ensure_ascii=False)
+        else:
+            todos_line = ""
 
-    return [_visual_trim(line, width) for line in out]
+    rows = [
+        state_line,
+        "",
+        hook_header,
+        hook_body,
+        "",
+        spinner_line,
+        todos_line,
+        "",
+    ]
+    return [_visual_trim(line, width) for line in rows]
 
 
 def _terminal_size() -> tuple[int, int]:
@@ -609,14 +597,13 @@ def _emit_status(ctx: dict) -> None:
         state=ctx["current_state"],
         use_color=ctx["color_enabled"],
     )
-    # Status bar shape: separator · content · blank.
-    # _render_status_lines already starts with its own blank, so we
-    # don't add one between separator and content here.
-    # The blank ABOVE the separator comes naturally from each log
-    # block's trailing print() in the scroll region — we don't add
-    # one or we'd get 2-vs-1 asymmetry. The trailing blank below is
-    # appended explicitly here.
-    full = [sep, *lines, ""]
+    # Status bar fixed at 10 rows:
+    #   1: blank (above separator)
+    #   2: separator
+    #   3-10: 8 content lines from _render_status_lines
+    full = ["", sep, *lines]
+    # Defensive: enforce 10-row contract
+    assert len(full) == 10, f"status bar must be 10 rows, got {len(full)}"
     new_height = len(full)
     old_height = ctx["status_height"]
 
