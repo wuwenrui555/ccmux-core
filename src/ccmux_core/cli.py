@@ -41,7 +41,7 @@ def _bindings_table(bindings: list[TmuxBinding]) -> str:
         "TMUX_SESSION",
         "PANE_ID",
         "WINDOW_ID",
-        "PRIMARY_SESSION_ID",
+        "CURRENT_SESSION_ID",
         "LAST_EVENT",
     ]
     rows = [
@@ -76,10 +76,15 @@ def cmd_bindings_snapshot(args) -> int:
     from pathlib import Path
 
     from .bindings import snapshot
+    from .config import ccmux_core_dir
 
     output = Path(args.output).expanduser() if args.output else None
-    count = snapshot(bindings_path=output)
-    target = output if output is not None else "~/.ccmux-core/bindings.json"
+    try:
+        count = snapshot(bindings_path=output)
+    except OSError as e:
+        print(f"ccmux-core bindings snapshot: {e}", file=sys.stderr)
+        return 1
+    target = output if output is not None else ccmux_core_dir() / "bindings.json"
     print(f"wrote {count} bindings to {target}", file=sys.stderr)
     return 0
 

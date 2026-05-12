@@ -89,7 +89,7 @@ def list_live_tmux_bindings(
             tmux_session=b.tmux_session,
             pane_id=b.pane_id,
             window_id=b.window_id,
-            current_session_id=b.current_session_id or "",
+            current_session_id=b.current_session_id,
             session_id_history=tuple(b.session_id_history),
             first_seen_at=b.first_seen_at,
             last_event_at=b.last_event_at,
@@ -155,7 +155,7 @@ async def discover_tmux_sessions(
                         tmux_session=b.tmux_session,
                         pane_id=b.pane_id,
                         window_id=b.window_id,
-                        current_session_id=b.current_session_id or "",
+                        current_session_id=b.current_session_id,
                         session_id_history=tuple(b.session_id_history),
                         first_seen_at=b.first_seen_at,
                         last_event_at=b.last_event_at,
@@ -413,10 +413,7 @@ class BindingsTracker:
     async def __aenter__(self) -> BindingsTracker:
         # Load existing bindings.json into our mutable mirror, if it exists.
         if self._bindings_path.exists():
-            try:
-                loaded = json.loads(self._bindings_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                loaded = {}
+            loaded = json.loads(self._bindings_path.read_text(encoding="utf-8"))
             for tmux_session, entry in loaded.items():
                 self._bindings[tmux_session] = _MutableBinding(
                     tmux_session=tmux_session,
@@ -438,17 +435,21 @@ class BindingsTracker:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self._stop = True
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
-        if self._fh is not None:
-            self._fh.close()
-            self._fh = None
-        # Final flush — covers any last_event_at-only updates accumulated.
-        self._flush()
+        try:
+            if self._task is not None:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                # Non-CancelledError exceptions from _run propagate out
+                # of the await; the finally block below still runs.
+        finally:
+            if self._fh is not None:
+                self._fh.close()
+                self._fh = None
+            # Final flush — covers any last_event_at-only updates accumulated.
+            self._flush()
 
     async def _run(self) -> None:
         # Wait for events.jsonl to exist if not opened in __aenter__.
