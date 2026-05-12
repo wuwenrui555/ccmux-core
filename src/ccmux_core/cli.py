@@ -403,13 +403,20 @@ def _pretty_block(
 # ---------------------------------------------------------------------------
 
 
-def _status_separator(width: int) -> str:
+def _status_separator(width: int, *, state=None, use_color: bool = False) -> str:
     """Top separator line for the status bar.
 
     ``─── STATUS ──...──`` padded out to ``width`` visual cells.
+    When ``use_color`` is True, the whole line is rendered bold and
+    tinted with ``state``'s color (matches the state cell so the
+    bar's tone tracks session state).
     """
     label = "─── STATUS "
-    return label + "─" * max(0, width - _visual_width(label))
+    line = label + "─" * max(0, width - _visual_width(label))
+    if use_color:
+        color = _color_for_state(state) if state is not None else ""
+        return f"{_ANSI['bold']}{color}{line}{_ANSI['reset']}"
+    return line
 
 
 def _hook_age_seconds(ts: str | None) -> int | None:
@@ -443,8 +450,8 @@ def _render_status_lines(
         spinner=<line1>
                 <line2>  (if multi-line)
                 <line3>  (etc.)
-          ☐ <todo 1>
-          ☐ <todo 2>
+        <todo line 1, verbatim from spinner.todos>
+        <todo line 2, verbatim from spinner.todos>
 
     Returns one line per row, NOT including the top separator. Each
     line is plain text trimmed to ``width`` visual columns.
@@ -486,20 +493,13 @@ def _render_status_lines(
         for cont in spinner_lines[1:]:
             out.append(f"        {cont}")
 
-        # ccmux-spinner's Spinner.todos is tuple[str, ...] with no
-        # completion field; render all as unchecked. If upstream
-        # adds done/completed info later, swap in ☑ here.
+        # ccmux-spinner's Spinner.todos is tuple[str, ...] where each
+        # string already carries claude TUI's native markers
+        # (⎿ / ◻ / ✔ / "… +N completed"). Emit verbatim — prepending
+        # our own ☐ here would double-mark every line.
         for item in getattr(latest_spinner_activity, "todos", ()) or ():
-            done = False
-            if hasattr(item, "done"):
-                done = bool(item.done)
-            elif hasattr(item, "completed"):
-                done = bool(item.completed)
-            elif hasattr(item, "state"):
-                done = str(item.state).lower() in ("done", "completed")
             text_part = getattr(item, "text", None) or str(item)
-            mark = "☑" if done else "☐"
-            out.append(f"  {mark} {text_part}")
+            out.append(text_part)
 
     return [_visual_trim(line, width) for line in out]
 
@@ -530,9 +530,13 @@ def _emit_status(ctx: dict) -> None:
         use_color=ctx["color_enabled"],
         width=cols,
     )
-    sep = _status_separator(cols)
-    # Trailing blank line for visual breathing room against the bottom edge.
-    full = [sep, *lines, ""]
+    sep = _status_separator(
+        cols,
+        state=ctx["current_state"],
+        use_color=ctx["color_enabled"],
+    )
+    # Blank lines above and below for visual breathing room.
+    full = ["", sep, *lines, ""]
     new_height = len(full)
     old_height = ctx["status_height"]
 

@@ -401,6 +401,51 @@ def test_status_separator_fills_width():
     assert _visual_width(sep) == 40
 
 
+def test_status_separator_colored_is_bold_and_state_tinted():
+    from ccmux_core.cli import _ANSI, _status_separator
+    from ccmux_core.state import Working
+
+    sep = _status_separator(40, state=Working(tool_name="Bash"), use_color=True)
+    # bold + yellow (Working's color)
+    assert _ANSI["bold"] in sep
+    assert _ANSI["yellow"] in sep
+    assert _ANSI["reset"] in sep
+
+
+def test_status_separator_uncolored_when_state_is_none():
+    from ccmux_core.cli import _ANSI, _status_separator
+
+    sep = _status_separator(40, state=None, use_color=True)
+    # bold still applied but no state color
+    assert _ANSI["bold"] in sep
+    # no state-specific color leaks in
+    for k in ("green", "yellow", "magenta", "red_dim"):
+        assert _ANSI[k] not in sep
+
+
+def test_render_status_lines_emits_todos_verbatim_without_extra_marker():
+    """spinner.todos already carry ⎿ / ◻ / ✔; we must not prepend ☐."""
+    from ccmux_core.cli import _render_status_lines
+    from ccmux_core.state import Working
+
+    class _FakeActivity:
+        text = "Working"
+        todos = ("⎿  ◻ Item one", "   ✔ Item two", "    … +17 completed")
+
+    lines = _render_status_lines(
+        state=Working(tool_name=None),
+        latest_hook_event=None,
+        latest_spinner_activity=_FakeActivity(),
+        use_color=False,
+        width=120,
+    )
+    # each todo string appears verbatim, somewhere in the output
+    for todo in ("⎿  ◻ Item one", "   ✔ Item two", "    … +17 completed"):
+        assert todo in lines, f"missing verbatim todo {todo!r}"
+    # ☐ MUST NOT have been prepended by our renderer
+    assert not any(line.startswith("  ☐") for line in lines)
+
+
 def test_parser_watch_accepts_no_status():
     p = build_parser()
     args = p.parse_args(["watch", "ccmux", "--no-status"])
