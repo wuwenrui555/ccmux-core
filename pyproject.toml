@@ -1,6 +1,6 @@
 [project]
 name = "ccmux-core"
-version = "0.2.0"
+version = "0.3.0"
 description = "Per-tmux-session state machine + stream multiplexer for Claude Code observers."
 readme = "README.md"
 requires-python = ">=3.11"
