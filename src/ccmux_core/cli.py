@@ -531,7 +531,8 @@ def _emit_status(ctx: dict) -> None:
         width=cols,
     )
     sep = _status_separator(cols)
-    full = [sep, *lines]
+    # Trailing blank line for visual breathing room against the bottom edge.
+    full = [sep, *lines, ""]
     new_height = len(full)
     old_height = ctx["status_height"]
 
