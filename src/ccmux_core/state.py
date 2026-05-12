@@ -48,17 +48,30 @@ class Blocked:
     """Session is waiting on the user.
 
     ``kind`` indicates which subsystem is blocking:
-      "permission"     — permission_request hook is open.
-      "ask_user"       — pre_tool_use(AskUserQuestion).
-      "exit_plan_mode" — pre_tool_use(ExitPlanMode).
+      "permission"     — permission_request for a side-effecting tool.
+      "ask_user"       — permission_request for AskUserQuestion.
+      "exit_plan_mode" — permission_request for ExitPlanMode.
 
-    ``tool_input`` is the raw ``payload.tool_input`` dict (or
-    ``None`` for legacy payloads).
+    ``tool_input`` is the raw ``payload.tool_input`` dict (or None
+    for legacy payloads). For ``ask_user``: contains the
+    ``questions`` array. For ``exit_plan_mode``: contains the
+    ``plan`` markdown.
+
+    ``request_id`` is set when the block came from a
+    ``permission_request`` event whose payload carried a
+    ``request_id`` (used to route the socket response in v0.2 L2).
+    None for blocks observed via ``pre_tool_use`` only.
+
+    ``expired`` is True after a ``drop_to_tui()`` call or a
+    decision-socket timeout. When True, structured ``respond_*``
+    methods must raise; only ``send_keys()`` works.
     """
 
     kind: Literal["permission", "ask_user", "exit_plan_mode"]
     tool_name: str
     tool_input: dict | None
+    request_id: str | None = None
+    expired: bool = False
 
 
 @dataclass(frozen=True)

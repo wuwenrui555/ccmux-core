@@ -11,7 +11,8 @@ to four typed streams: `states / events / messages / spinners`.
 
 ## Status
 
-v0.1 — early. See `docs/superpowers/specs/` for the design spec.
+v0.2 — three-layer model with state-gated operations. See
+`docs/superpowers/specs/` for the design specs.
 
 ## Install
 
@@ -38,6 +39,26 @@ async def main():
 
 asyncio.run(main())
 ```
+
+## L2 operations
+
+```python
+from ccmux_core import Backend, Blocked
+
+async with Backend(tmux_session="my-session", pane_id="%0") as b:
+    # Subscribe to state transitions
+    async for state in b.states():
+        if isinstance(state, Blocked) and state.kind == "permission":
+            await b.respond_permission(decision="allow", mode="once")
+
+    # Send a prompt — auto-queued if claude is still working
+    await b.send_prompt("Please refactor this file")
+
+    # Interrupt the current turn (clears the input chrome too)
+    await b.interrupt()
+```
+
+See [docs/superpowers/specs/2026-05-12-ccmux-core-l2-design.md](docs/superpowers/specs/2026-05-12-ccmux-core-l2-design.md) for the full L2 design.
 
 ## Configuration
 
