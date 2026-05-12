@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ccmux_spinner import Activity, PaneCaptureError, SpinnerMonitor
-from claude_tap import ClaudeMessage, EventStream, MessageStream
+from claude_tap import ClaudeMessage, DecisionListener, EventStream, MessageStream
 from claude_tap.config import events_path as _default_events_path
 
 from . import config
@@ -67,6 +67,8 @@ class Backend:
         pane_id: str,
         *,
         events_path: Path | None = None,
+        decision_sock_path: Path | None = None,
+        decision_timeout: float = 120.0,
         spinner_grace: float | None = None,
         process_probe_interval: float | None = None,
         process_probe_startup_grace: float | None = None,
@@ -75,6 +77,11 @@ class Backend:
         self._tmux_session = tmux_session
         self._pane_id = pane_id
         self._events_path = events_path
+        self._decision_sock_path = decision_sock_path
+        self._decision_timeout = decision_timeout
+        self._decision_listener: DecisionListener | None = None
+        self._decision_task: asyncio.Task | None = None
+        self._active_request_id: str | None = None
         self._spinner_grace = (
             spinner_grace if spinner_grace is not None else config.spinner_grace()
         )
@@ -142,6 +149,9 @@ class Backend:
         self._event_task = asyncio.create_task(self._event_consumer())
         self._on_live_task = asyncio.create_task(self._on_live_phase_entered())
         self._fallback_task = asyncio.create_task(self._live_fallback_timer())
+        self._decision_listener = DecisionListener(path=self._decision_sock_path)
+        await self._decision_listener.__aenter__()
+        self._decision_task = asyncio.create_task(self._decision_consumer())
         return self
 
     async def __aexit__(
@@ -151,6 +161,16 @@ class Backend:
         tb: TracebackType | None,
     ) -> None:
         self._stopped.set()
+        # Stop the decision consumer and unbind the listener first so we
+        # don't leave a socket file behind if anything else fails.
+        if self._decision_task is not None and not self._decision_task.done():
+            self._decision_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._decision_task
+        if self._decision_listener is not None:
+            with contextlib.suppress(Exception):
+                await self._decision_listener.__aexit__(exc_type, exc, tb)
+            self._decision_listener = None
         for t in (
             self._event_task,
             self._message_task,
@@ -328,6 +348,30 @@ class Backend:
         await self.send_keys("Enter", literal=False)
 
     # ---- internal tasks ------------------------------------------------
+
+    async def _decision_consumer(self) -> None:
+        """Pull DecisionRequests from the listener and route by session_id.
+
+        If the request's session_id matches our primary, stash the
+        request_id onto self._active_request_id so respond_* methods
+        can route to it. If it doesn't match, respond with {} immediately
+        to release the hook (this Backend doesn't own that session)."""
+        if self._decision_listener is None:
+            return
+        try:
+            async for req in self._decision_listener:
+                if self._stopped.is_set():
+                    break
+                if req.session_id != self._primary:
+                    # not ours — release the hook so claude falls through to TUI
+                    await self._decision_listener.respond(req.request_id, {})
+                    continue
+                # ours — stash the request_id; respond_* will consume it
+                self._active_request_id = req.request_id
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
     async def _event_consumer(self) -> None:
         try:

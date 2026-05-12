@@ -957,3 +957,26 @@ async def test_interrupt_in_dead_is_noop(tmp_path):
         with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
             await b.interrupt()
         sk.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_decision_listener_bound_in_aenter_unbound_in_aexit(tmp_path):
+    """Backend should bind decision.sock on __aenter__ and unbind on __aexit__."""
+    from ccmux_core import Backend
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+    sock_path = tmp_path / "decision.sock"
+
+    async with Backend(
+        tmux_session="t1",
+        pane_id="%0",
+        events_path=events_path,
+        decision_sock_path=sock_path,
+    ) as b:
+        # while open, the unix socket file should exist (bound)
+        assert sock_path.exists() or sock_path.is_socket()
+        assert b._decision_listener is not None
+    # after exit, socket file removed and listener is None
+    assert not sock_path.exists()
+    assert b._decision_listener is None
