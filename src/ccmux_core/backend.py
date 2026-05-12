@@ -68,7 +68,6 @@ class Backend:
         *,
         events_path: Path | None = None,
         decision_sock_path: Path | None = None,
-        decision_timeout: float = 120.0,
         spinner_grace: float | None = None,
         process_probe_interval: float | None = None,
         process_probe_startup_grace: float | None = None,
@@ -78,10 +77,8 @@ class Backend:
         self._pane_id = pane_id
         self._events_path = events_path
         self._decision_sock_path = decision_sock_path
-        self._decision_timeout = decision_timeout
         self._decision_listener: DecisionListener | None = None
         self._decision_task: asyncio.Task | None = None
-        self._active_request_id: str | None = None
         self._spinner_grace = (
             spinner_grace if spinner_grace is not None else config.spinner_grace()
         )
@@ -225,15 +222,18 @@ class Backend:
             yield item
 
     async def messages(self) -> AsyncIterator[Message]:
-        """L1 normalized message stream (dedup'd from events + transcript).
+        """L1 normalized message stream.
 
-        Each :class:`Message` kind is sourced from exactly one upstream
-        channel per the L2 design dedup table:
+        Currently emits:
 
-        * ``UserPrompt`` / ``PermissionRequest`` — from
-          :meth:`events` (``user_prompt_submit`` / ``permission_request``).
-        * ``AssistantText`` / ``ToolCall`` / ``ToolResult`` — from
-          :meth:`transcript_items` (claude-tap ``ClaudeMessage``).
+        * ``UserPrompt`` (from ``events.user_prompt_submit``)
+        * ``PermissionRequest`` (from ``events.permission_request``)
+
+        Transcript-side kinds (``AssistantText``, ``ToolCall``,
+        ``ToolResult``) are part of the L1 design but deferred to a
+        follow-up: claude-tap's ``ClaudeMessage`` shape doesn't cleanly
+        map to our L1 types without upstream adjustments. See the
+        v0.2.0 CHANGELOG.
 
         ``Notification`` events are deliberately excluded — they are
         control-plane signals, not conversational content.
@@ -283,6 +283,15 @@ class Backend:
     def pending_preview(self) -> str:
         """Concatenated preview of pending prompts (frontend display)."""
         return "\n\n".join(self._pending)
+
+    @property
+    def state(self) -> State | None:
+        """Current state snapshot.
+
+        Synchronously readable. May be None before the first event is
+        processed (pre-live-phase); treat None as 'not yet observed'.
+        Use :meth:`states` async iterator for live transitions."""
+        return self._state
 
     async def send_prompt(self, text: str) -> None:
         """Send a prompt to claude.
@@ -580,10 +589,11 @@ class Backend:
     async def _decision_consumer(self) -> None:
         """Pull DecisionRequests from the listener and route by session_id.
 
-        If the request's session_id matches our primary, stash the
-        request_id onto self._active_request_id so respond_* methods
-        can route to it. If it doesn't match, respond with {} immediately
-        to release the hook (this Backend doesn't own that session)."""
+        If the request's session_id doesn't match our primary, respond
+        with {} immediately to release the hook (this Backend doesn't
+        own that session). For our own requests, the request_id is
+        carried on Blocked.request_id via the hook event payload (see
+        state_machine), so respond_* methods consume it from there."""
         if self._decision_listener is None:
             return
         try:
@@ -594,8 +604,6 @@ class Backend:
                     # not ours — release the hook so claude falls through to TUI
                     await self._decision_listener.respond(req.request_id, {})
                     continue
-                # ours — stash the request_id; respond_* will consume it
-                self._active_request_id = req.request_id
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -1692,3 +1692,19 @@ async def test_drop_to_tui_with_no_request_id_only_marks_expired(tmp_path):
         await b.drop_to_tui()
         assert b._state.expired is True
     listener.respond.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_backend_state_property_exposes_current_state(tmp_path):
+    """Backend.state returns the current State or None pre-live."""
+    from ccmux_core import Backend
+    from ccmux_core.state import Idle
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        # default: None pre-live (no events processed yet)
+        assert b.state is None or hasattr(b.state, "reason")  # tolerant
+        b._state = Idle(reason="stop")
+        assert b.state == Idle(reason="stop")
