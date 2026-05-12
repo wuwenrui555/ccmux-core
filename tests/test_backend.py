@@ -1405,3 +1405,191 @@ async def test_respond_exit_plan_after_expired_raises(tmp_path):
         )
         with pytest.raises(BlockedExpiredError):
             await b.respond_exit_plan(mode="manual")
+
+
+@pytest.mark.asyncio
+async def test_respond_question_single_selection(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="ask_user",
+            tool_name="AskUserQuestion",
+            tool_input={
+                "questions": [
+                    {"question": "Pick a DB", "options": [{"label": "postgres"}]},
+                ]
+            },
+            request_id="r-1",
+        )
+        b._decision_listener = listener
+        await b.respond_question(["postgres"])
+
+    payload = listener.respond.call_args.args[1]
+    dec = payload["hookSpecificOutput"]["decision"]
+    assert dec["behavior"] == "allow"
+    assert dec["updatedInput"]["answers"] == {"Pick a DB": "postgres"}
+    # questions preserved alongside answers
+    assert dec["updatedInput"]["questions"] == [
+        {"question": "Pick a DB", "options": [{"label": "postgres"}]},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_respond_question_multiple_questions_positional(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="ask_user",
+            tool_name="AskUserQuestion",
+            tool_input={
+                "questions": [
+                    {"question": "Q1", "options": [{"label": "a"}]},
+                    {"question": "Q2", "options": [{"label": "b"}]},
+                ]
+            },
+            request_id="r-2",
+        )
+        b._decision_listener = listener
+        await b.respond_question(["a", "b"])
+
+    answers = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"][
+        "updatedInput"
+    ]["answers"]
+    assert answers == {"Q1": "a", "Q2": "b"}
+
+
+@pytest.mark.asyncio
+async def test_respond_question_extra_selections_use_fallback_key(tmp_path):
+    """If selections has more entries than questions, the extras get
+    'Answer N' as the key — matches cmux behavior."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="ask_user",
+            tool_name="AskUserQuestion",
+            tool_input={
+                "questions": [
+                    {"question": "Q1", "options": [{"label": "a"}]},
+                ]
+            },
+            request_id="r-3",
+        )
+        b._decision_listener = listener
+        await b.respond_question(["a", "b"])
+
+    answers = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"][
+        "updatedInput"
+    ]["answers"]
+    assert answers == {"Q1": "a", "Answer 2": "b"}
+
+
+@pytest.mark.asyncio
+async def test_respond_question_question_text_stripped(tmp_path):
+    """Question keys should be stripped (whitespace shouldn't matter)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="ask_user",
+            tool_name="AskUserQuestion",
+            tool_input={"questions": [{"question": "  spaced?  ", "options": []}]},
+            request_id="r-4",
+        )
+        b._decision_listener = listener
+        await b.respond_question(["yes"])
+
+    answers = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"][
+        "updatedInput"
+    ]["answers"]
+    assert "spaced?" in answers
+
+
+@pytest.mark.asyncio
+async def test_respond_question_in_wrong_kind_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import WrongBlockedKindError
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={},
+            request_id="r-x",
+        )
+        with pytest.raises(WrongBlockedKindError):
+            await b.respond_question(["x"])
+
+
+@pytest.mark.asyncio
+async def test_respond_question_in_non_blocked_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import WrongStateError
+    from ccmux_core.state import Idle
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Idle(reason="stop")
+        with pytest.raises(WrongStateError):
+            await b.respond_question(["x"])
+
+
+@pytest.mark.asyncio
+async def test_respond_question_after_expired_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import BlockedExpiredError
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="ask_user",
+            tool_name="AskUserQuestion",
+            tool_input={"questions": []},
+            request_id="r-x",
+            expired=True,
+        )
+        with pytest.raises(BlockedExpiredError):
+            await b.respond_question(["x"])

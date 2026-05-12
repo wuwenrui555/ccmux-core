@@ -477,6 +477,65 @@ class Backend:
         assert state.request_id is not None, "no request_id on Blocked state"
         await self._decision_listener.respond(state.request_id, decision_json)
 
+    async def respond_question(self, selections: list[str]) -> None:
+        """Respond to a Blocked(kind='ask_user') AskUserQuestion dialog.
+
+        selections is positional — selections[i] is the user's chosen
+        option label for questions[i]. If selections is longer than
+        questions, extras get 'Answer N' (1-based) as the key, matching
+        cmux behavior.
+
+        Each entry is an option's label string. Multi-select within a
+        single question should be joined by the caller (e.g. ", ") before
+        passing — this mirrors cmux's claudeAskUserQuestionInput logic.
+        """
+        from .error import (
+            BlockedExpiredError,
+            WrongBlockedKindError,
+            WrongStateError,
+        )
+        from .state import Blocked
+
+        state = self._state
+        if not isinstance(state, Blocked):
+            raise WrongStateError(
+                f"respond_question requires Blocked state, got {type(state).__name__}"
+            )
+        if state.kind != "ask_user":
+            raise WrongBlockedKindError(
+                f"respond_question requires kind='ask_user', got kind={state.kind!r}"
+            )
+        if state.expired:
+            raise BlockedExpiredError(
+                "decision.sock path is expired; use send_keys to navigate the TUI."
+            )
+
+        tool_input = dict(state.tool_input or {})
+        questions = tool_input.get("questions") or []
+        answers: dict[str, str] = {}
+        for idx, selection in enumerate(selections):
+            if idx < len(questions):
+                key = (questions[idx].get("question") or f"Answer {idx + 1}").strip()
+                if not key:
+                    key = f"Answer {idx + 1}"
+            else:
+                key = f"Answer {idx + 1}"
+            answers[key] = selection
+        tool_input["answers"] = answers
+
+        decision_json = {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {
+                    "behavior": "allow",
+                    "updatedInput": tool_input,
+                },
+            }
+        }
+        assert self._decision_listener is not None, "listener not bound"
+        assert state.request_id is not None, "no request_id on Blocked state"
+        await self._decision_listener.respond(state.request_id, decision_json)
+
     async def _flush_pending(self, *, new_state: State | None) -> None:
         """Called whenever we emit a new state. If the new state is
         Idle and the queue is non-empty, send the queued prompts as
