@@ -46,6 +46,31 @@ three-layer model with state-gated operations.
   fire through the permission hook (consistent with claude code's
   actual behavior, validated against cmux's production logic).
 
+### Added — watch CLI
+
+- Pinned top header (`─── session sid ───`) and a fixed 10-row
+  bottom status bar that surfaces current `state=`, the latest
+  hook event, and the live spinner activity (text, age, tokens,
+  todos). DECSTBM scroll region keeps the middle log between the
+  two.
+- Two-pane middle area when the status bar is active: L1 message
+  stream is split between a left pane (`UserPrompt` /
+  `AssistantText` — the conversation) and a right pane
+  (`ToolCall` / `ToolResult` / `PermissionRequest` — tool use).
+  Each pane independently scrolls a deque of fixed 4-row blocks
+  and re-renders on `SIGWINCH` to fill the current terminal
+  width. Per-block state + separator timestamp are snapshotted at
+  push time so overflow repaint preserves history rather than
+  restamping every block to the latest live state.
+- ANSI coloring by state (`Idle` green / `Working` yellow /
+  `Blocked` magenta / `Dead` dim red) and by message-label kind
+  (`USER` / `ASSISTANT` bold-white, `TOOL` blue, `PERMISSION`
+  magenta, `EVENT` blue, `SPINNER` gray). `--no-color` and
+  `--no-status` both fall back to the legacy single-column
+  scrolling log.
+- `ccmux-core watch` clears the screen + scrollback on startup so
+  the layout starts on a fresh canvas.
+
 ### Notes
 
 - `ccmux-core watch` scrolling log now shows the L1 normalized
