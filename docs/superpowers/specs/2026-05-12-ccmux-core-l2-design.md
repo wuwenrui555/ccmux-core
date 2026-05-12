@@ -441,13 +441,123 @@ await b.send_keys("Up", literal=False)
 await b.send_keys(["Down", "Down", "Enter"], literal=False)
 ```
 
-Wraps `tmux send-keys`. Frontend uses this to:
+Frontend uses this to:
 
 - Navigate TUI fallback dialogs (after `drop_to_tui`).
 - Send unusual key combinations not covered by higher-level methods.
 
 Available in any state; frontend is responsible for state
 appropriateness.
+
+### Key injection strategy (tmux send-keys vs TIOCSTI)
+
+By default, all key-sending operations (`send_prompt`, `interrupt`,
+`respond_*`, `send_keys`) go through `tmux send-keys`. This is the
+stable, well-supported path.
+
+**Problem**: when the user is in tmux copy mode (scrolling
+scrollback to review output), `tmux send-keys` is intercepted by
+copy-mode commands and never reaches claude. The naive fix —
+exit copy mode first — destroys the user's scroll position and
+selection.
+
+**Solution**: detect copy mode via
+`tmux display -p -t <pane> '#{?pane_in_mode,yes,no}'`. If the pane
+is **not** in copy mode, use `tmux send-keys`. If it **is**, fall
+back to TIOCSTI:
+
+```python
+import fcntl
+import termios
+import os
+
+pane_tty = subprocess.check_output(
+    ["tmux", "display", "-t", pane_id, "-p", "#{pane_tty}"],
+    text=True,
+).strip()
+fd = os.open(pane_tty, os.O_RDWR | os.O_NOCTTY)
+try:
+    for byte in encoded_bytes:
+        fcntl.ioctl(fd, termios.TIOCSTI, bytes([byte]))
+finally:
+    os.close(fd)
+```
+
+TIOCSTI injects characters directly into the slave-side input
+buffer of the pty. Tmux's input routing (and therefore copy mode)
+is bypassed entirely. Claude reads the injected bytes from stdin
+as if the user had typed them. The user's copy-mode view stays
+intact.
+
+#### TIOCSTI prior art
+
+The technique is widely used in production tools:
+
+- `pyserial/pyserial` (miniterm)
+- `Orange-Cyberdefense/arsenal` (security tooling)
+- `gorilla-llm/gorilla-cli` (LLM CLI helper)
+- `RetroPie/RetroPie-Setup` (joy2key joystick mapper)
+- `bdring/FluidNC` (CNC controller)
+
+Pattern is uniform: `fcntl.ioctl(fd, termios.TIOCSTI, byte)` one
+byte at a time.
+
+#### Deprecation status
+
+Linux 6.2 introduced `CONFIG_LEGACY_TIOCSTI` allowing distributions
+to disable TIOCSTI. As of 2026-05, mainstream distributions
+(Ubuntu, Debian, Arch, Fedora) still ship with it enabled. Only
+hardened distributions (e.g., Microsoft Azure Linux) disable it.
+TIOCSTI is expected to remain available for 3–5 more years; once
+mainstream distros start disabling it, we'll need a different
+approach for the copy-mode case (most likely: refuse with a clear
+error).
+
+#### Key-name to bytes table (TIOCSTI path)
+
+When using TIOCSTI, ccmux-core must convert named keys to raw
+bytes itself (no tmux to translate). A fixed map covers our needs:
+
+| Key name | Bytes (hex) | Notes |
+|----------|-------------|-------|
+| Enter / Return | `\r` | submit |
+| Escape | `\x1b` | interrupt |
+| C-u | `\x15` | clear line (readline) |
+| C-a | `\x01` | move to start |
+| C-k | `\x0b` | kill to end |
+| C-c | `\x03` | **disallowed** (claude quits) |
+| Up | `\x1b[A` | nav arrow |
+| Down | `\x1b[B` | nav arrow |
+| Left | `\x1b[D` | nav arrow |
+| Right | `\x1b[C` | nav arrow |
+| Tab | `\t` | completion |
+| literal text | UTF-8 encoded | as-is |
+
+The tmux-send-keys path uses tmux's native key names directly.
+Both paths must accept the same input vocabulary; the dispatch
+based on copy-mode happens transparently inside `send_keys`.
+
+### Pane capture in copy mode
+
+ccmux-spinner currently uses `tmux capture-pane -p -J -t <pane>`,
+which captures the **visible region** of the pane. In copy mode,
+the visible region is wherever the user scrolled to — not
+claude's live output.
+
+Fix: pin the capture to the buffer tail using `-S -<N> -E -`:
+
+```python
+["tmux", "capture-pane", "-p", "-J", "-t", pane_id, "-S", "-200", "-E", "-"]
+```
+
+`-S -200` starts 200 lines into history (from the buffer tail);
+`-E -` ends at the buffer tail (where claude is writing, not the
+copy-mode viewport). 200 lines is generous — spinner detection
+only inspects the last few rows.
+
+This is a change to ccmux-spinner, not ccmux-core, but it's
+required for spinner detection to work correctly while the user is
+in copy mode.
 
 ## Naming convention
 
