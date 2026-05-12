@@ -535,11 +535,11 @@ def _emit_status(ctx: dict) -> None:
         state=ctx["current_state"],
         use_color=ctx["color_enabled"],
     )
-    # Trailing blank line for visual breathing room. The blank above
-    # the separator comes naturally from each pretty-block's own
-    # trailing print() in the scroll region, so we don't add one
-    # here (doing so produces a visible 2-vs-1 asymmetry).
-    full = [sep, *lines, ""]
+    # Status bar shape: blank · separator · blank · content · blank.
+    # The leading blank works in tandem with skipping the natural
+    # trailing print() of log blocks (see _emit_pretty) so the
+    # status bar fully owns the spacing.
+    full = ["", sep, "", *lines, ""]
     new_height = len(full)
     old_height = ctx["status_height"]
 
@@ -668,7 +668,11 @@ async def _watch_async(
             sys.stdout.write(prefix)
 
         print(block, flush=True)
-        print(flush=True)
+        # Natural trailing blank between blocks. Skipped when the
+        # status bar is active so the status bar can fully own the
+        # spacing above the separator (avoids 2-vs-1 asymmetry).
+        if not ctx.get("status_enabled"):
+            print(flush=True)
 
         if is_spinner:
             ctx["last_emit_was_spinner"] = True
