@@ -822,3 +822,29 @@ async def test_flush_pending_is_noop_when_state_not_idle(tmp_path):
             await b._flush_pending(new_state=Working(tool_name=None))
         sk.assert_not_called()
         assert b.pending_count == 1  # queue preserved
+
+
+@pytest.mark.asyncio
+async def test_trigger_safety_spinner_grace_flushes_pending_to_idle(tmp_path):
+    """When the safety net fires spinner_grace, transitioning to
+    Idle, the pending queue must be flushed via await (not fire-and-forget)."""
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Working
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Working(tool_name=None)
+        b._pending.append("queued-A")
+        b._pending.append("queued-B")
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            # _trigger_safety is now async and awaits flush
+            await b._trigger_safety("spinner_grace")
+        # one of the send_keys calls should be the concatenated literal
+        sent_args = [c.args for c in sk.call_args_list]
+        text_calls = [a for a in sent_args if a and a[0] == "queued-A\n\nqueued-B"]
+        assert text_calls, f"expected concatenated flush; got {sent_args}"
+        assert b.pending_count == 0

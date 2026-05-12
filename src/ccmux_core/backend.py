@@ -430,9 +430,9 @@ class Backend:
                         break
                     self._spinners_q.put_nowait(activity)
             # Iterator ended naturally — pane was lost.
-            self._trigger_safety("pane_lost")
+            await self._trigger_safety("pane_lost")
         except PaneCaptureError:
-            self._trigger_safety("pane_lost")
+            await self._trigger_safety("pane_lost")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -481,7 +481,7 @@ class Backend:
                 # Spinner absent. Has the pane content been static?
                 pane_change_age = time.time() - mon.last_pane_change_at
                 if pane_change_age >= self._spinner_grace:
-                    self._trigger_safety("spinner_grace")
+                    await self._trigger_safety("spinner_grace")
                     last_spinner_seen_at = None  # don't re-fire
         except asyncio.CancelledError:
             raise
@@ -493,7 +493,7 @@ class Backend:
                 if self._probe_session_alive():
                     await asyncio.sleep(self._probe_interval)
                     continue
-                self._trigger_safety("process_gone")
+                await self._trigger_safety("process_gone")
                 return
         except asyncio.CancelledError:
             raise
@@ -521,14 +521,14 @@ class Backend:
         cmds = {line.strip() for line in result.stdout.splitlines() if line.strip()}
         return bool(cmds & self._proc_names)
 
-    def _trigger_safety(self, trigger: str) -> None:
+    async def _trigger_safety(self, trigger: str) -> None:
         step = apply_safety_net(state=self._state, trigger=trigger)  # type: ignore[arg-type]
         self._state = step.new_state
         if step.emit and step.new_state is not None:
             self._states_q.put_nowait(step.new_state)
-            # Schedule flush — sync context can't await. _flush_pending
-            # is a no-op when new_state isn't Idle or when queue is
-            # empty, so the task is cheap in the common case.
-            asyncio.create_task(self._flush_pending(new_state=step.new_state))
+            # Await flush directly so callers can rely on completion
+            # before teardown. _flush_pending is a no-op when
+            # new_state isn't Idle or when queue is empty.
+            await self._flush_pending(new_state=step.new_state)
         if isinstance(step.new_state, Dead):
             self._stopped.set()
