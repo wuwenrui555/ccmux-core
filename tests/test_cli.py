@@ -50,8 +50,11 @@ def test_bindings_table_single():
                 tmux_session="ccmux",
                 pane_id="%42",
                 window_id="@0",
-                primary_session_id="abc-12345",
+                current_session_id="abc-12345",
+                session_id_history=("abc-12345",),
+                first_seen_at="2026-05-11T01:55:42Z",
                 last_event_at="2026-05-11T01:55:42Z",
+                ended_at=None,
             )
         ]
     )

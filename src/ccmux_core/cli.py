@@ -49,7 +49,7 @@ def _bindings_table(bindings: list[TmuxBinding]) -> str:
             b.tmux_session,
             b.pane_id,
             b.window_id,
-            b.primary_session_id,
+            b.current_session_id or "",
             b.last_event_at,
         ]
         for b in bindings
@@ -992,7 +992,7 @@ async def _watch_async(
     ctx = {
         "tmux_session": match.tmux_session,
         "window_id": match.window_id,
-        "primary_sid": match.primary_session_id,
+        "primary_sid": match.current_session_id,
         "latest_spinner_text": None,  # type: str | None
         "current_state": None,  # type: State | None
         # In-place spinner-refresh state. ``last_emit_was_spinner`` is

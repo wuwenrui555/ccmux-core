@@ -32,13 +32,24 @@ class TmuxBinding:
 
     Produced by :func:`list_live_tmux_bindings` (snapshot) and
     :func:`discover_tmux_sessions` (stream).
+
+    ``current_session_id is None`` indicates the binding has been
+    observed before but no Claude session is currently attached
+    (post-``session_end`` or post-``/clear``). ``session_id_history``
+    is the first-seen-order, deduplicated list of every Claude
+    session id this tmux session has hosted. ``ended_at`` is the
+    timestamp of the most recent ``current → None`` transition or
+    ``None`` if currently attached.
     """
 
     tmux_session: str
     pane_id: str
     window_id: str
-    primary_session_id: str
+    current_session_id: str | None
+    session_id_history: tuple[str, ...]
+    first_seen_at: str
     last_event_at: str
+    ended_at: str | None
 
 
 def list_live_tmux_bindings(
@@ -48,7 +59,7 @@ def list_live_tmux_bindings(
 
     Reads events.jsonl, processes every entry, returns the current
     bindings list. "Live" means the most recent state for the tmux
-    session leaves ``primary_session_id`` set (not in a post-/clear
+    session leaves ``current_session_id`` set (not in a post-/clear
     gap, not after a fatal session_end).
 
     Returns ``[]`` if events.jsonl does not exist, is empty, or
@@ -76,8 +87,11 @@ def list_live_tmux_bindings(
             tmux_session=b.tmux_session,
             pane_id=b.pane_id,
             window_id=b.window_id,
-            primary_session_id=b.primary_session_id or "",
+            current_session_id=b.primary_session_id,
+            session_id_history=(),
+            first_seen_at=b.last_event_at,
             last_event_at=b.last_event_at,
+            ended_at=None,
         )
         for b in bindings.values()
         if b.primary_session_id is not None
@@ -139,8 +153,11 @@ async def discover_tmux_sessions(
                         tmux_session=b.tmux_session,
                         pane_id=b.pane_id,
                         window_id=b.window_id,
-                        primary_session_id=b.primary_session_id,
+                        current_session_id=b.primary_session_id,
+                        session_id_history=(),
+                        first_seen_at=b.last_event_at,
                         last_event_at=b.last_event_at,
+                        ended_at=None,
                     )
 
 

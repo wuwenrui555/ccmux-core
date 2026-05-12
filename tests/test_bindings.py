@@ -37,6 +37,24 @@ def _write_events(path: Path, events: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
 
 
+def test_tmuxbinding_has_new_fields():
+    from ccmux_core.bindings import TmuxBinding
+
+    tb = TmuxBinding(
+        tmux_session="ccmux",
+        pane_id="%1",
+        window_id="@0",
+        current_session_id="sid-1",
+        session_id_history=("sid-1",),
+        first_seen_at="2026-05-12T00:00:00Z",
+        last_event_at="2026-05-12T00:00:01Z",
+        ended_at=None,
+    )
+    assert tb.current_session_id == "sid-1"
+    assert tb.session_id_history == ("sid-1",)
+    assert tb.ended_at is None
+
+
 # ---------------------------------------------------------------------------
 # list_live_tmux_bindings
 # ---------------------------------------------------------------------------
@@ -58,7 +76,7 @@ def test_malformed_lines_skipped(tmp_path):
     p.write_text("not json\n" + json.dumps(_ev("session_start", "S1")) + "\n")
     out = list_live_tmux_bindings(events_path=p)
     assert len(out) == 1
-    assert out[0].primary_session_id == "S1"
+    assert out[0].current_session_id == "S1"
 
 
 def test_single_session_start_yields_one_binding(tmp_path):
@@ -70,8 +88,11 @@ def test_single_session_start_yields_one_binding(tmp_path):
             tmux_session="ccmux",
             pane_id="%42",
             window_id="@7",
-            primary_session_id="S1",
+            current_session_id="S1",
+            session_id_history=(),
+            first_seen_at="2026-05-10T00:00:00+00:00",
             last_event_at="2026-05-10T00:00:00+00:00",
+            ended_at=None,
         )
     ]
 
@@ -90,7 +111,7 @@ def test_clear_chain_yields_only_last_primary(tmp_path):
     )
     out = list_live_tmux_bindings(events_path=p)
     assert len(out) == 1
-    assert out[0].primary_session_id == "S3"
+    assert out[0].current_session_id == "S3"
     assert out[0].last_event_at == "T5"
 
 
@@ -105,7 +126,7 @@ def test_prompt_input_exit_keeps_primary(tmp_path):
     )
     out = list_live_tmux_bindings(events_path=p)
     assert len(out) == 1
-    assert out[0].primary_session_id == "S1"
+    assert out[0].current_session_id == "S1"
 
 
 def test_fatal_session_end_removes_binding(tmp_path):
@@ -146,7 +167,7 @@ def test_subagent_does_not_override_primary(tmp_path):
     )
     out = list_live_tmux_bindings(events_path=p)
     assert len(out) == 1
-    assert out[0].primary_session_id == "S1"
+    assert out[0].current_session_id == "S1"
 
 
 def test_multiple_tmux_sessions_yield_separate_bindings(tmp_path):
