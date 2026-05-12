@@ -310,10 +310,16 @@ def _event_body(event: dict) -> str:
     et = event.get("event_type", "")
     if et == "user_prompt_submit":
         return json.dumps(payload.get("prompt", ""), ensure_ascii=False)[1:-1]
-    if et in ("pre_tool_use", "post_tool_use"):
-        return f"tool={payload.get('tool_name', '?')}"
-    if et == "permission_request":
-        return f"tool={payload.get('tool_name', '?')}"
+    if et in ("pre_tool_use", "post_tool_use", "permission_request"):
+        tool = payload.get("tool_name", "?")
+        tool_input = payload.get("tool_input")
+        if tool_input:
+            # Compact one-line JSON of the input so we can see what
+            # the tool was called with (e.g. Bash command, file path,
+            # AskUserQuestion question, etc.). _trim_body downstream
+            # caps the length.
+            return f"tool={tool}  {json.dumps(tool_input, ensure_ascii=False)}"
+        return f"tool={tool}"
     if et == "notification":
         return json.dumps(payload.get("message", ""), ensure_ascii=False)[1:-1]
     if et == "stop":
@@ -549,6 +555,13 @@ def _render_status_lines(
             todos_line = json.dumps(todo_strs, ensure_ascii=False)
         else:
             todos_line = ""
+
+    # Body-style rows (hook body, todos) cap at _pretty_width() with
+    # ellipsis truncation so they stay readable even on wide terminals.
+    # The state / spinner / header rows stay short by construction and
+    # use the full terminal width trim only as a hard backstop.
+    hook_body = _trim_body(hook_body) if hook_body else hook_body
+    todos_line = _trim_body(todos_line) if todos_line else todos_line
 
     rows = [
         state_line,
