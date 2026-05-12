@@ -172,6 +172,19 @@ def _ev(
 # ---------------------------------------------------------------------------
 
 
+def test_backend_exposes_transcript_items_method():
+    """L0 method is named `transcript_items`, not `messages`."""
+    from ccmux_core import Backend
+
+    # method exists
+    assert callable(getattr(Backend, "transcript_items", None))
+    # old name removed to avoid confusion with L1 messages()
+    assert (
+        not hasattr(Backend, "messages")
+        or Backend.messages is not Backend.transcript_items
+    )
+
+
 @pytest.mark.asyncio
 async def test_backend_emits_initial_idle_start(monkeypatch):
     import ccmux_core.backend as bk

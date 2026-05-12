@@ -4,8 +4,10 @@ The Backend exposes four typed async iterators:
 
 * :meth:`states` — :data:`State` transitions.
 * :meth:`events` — raw claude-tap event dicts for this tmux_session.
-* :meth:`messages` — :class:`ClaudeMessage` for any known session_id
-  on this tmux_session (primary + subagents).
+* :meth:`transcript_items` — :class:`ClaudeMessage` for any known
+  session_id on this tmux_session (primary + subagents). These are
+  raw transcript items from claude-tap; the v0.2 L1 layer adds a
+  normalized ``messages()`` stream.
 * :meth:`spinners` — :data:`Activity` snapshots from ccmux-spinner.
 
 Internally it spawns five concurrent tasks (event / message /
@@ -166,7 +168,15 @@ class Backend:
                 return
             yield item
 
-    async def messages(self) -> AsyncIterator[ClaudeMessage]:
+    async def transcript_items(self) -> AsyncIterator[ClaudeMessage]:
+        """Raw transcript items (L0) for known session_ids on this tmux_session.
+
+        Yields :class:`ClaudeMessage` instances exactly as emitted by
+        claude-tap's ``MessageStream``, filtered to primary + subagent
+        session_ids tracked on this tmux_session. v0.2 adds an L1
+        ``messages()`` method that normalizes these into a unified
+        message stream.
+        """
         while True:
             item = await self._messages_q.get()
             if item is _END:
