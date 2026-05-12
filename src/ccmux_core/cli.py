@@ -535,8 +535,11 @@ def _emit_status(ctx: dict) -> None:
         state=ctx["current_state"],
         use_color=ctx["color_enabled"],
     )
-    # Blank lines above and below for visual breathing room.
-    full = ["", sep, *lines, ""]
+    # Trailing blank line for visual breathing room. The blank above
+    # the separator comes naturally from each pretty-block's own
+    # trailing print() in the scroll region, so we don't add one
+    # here (doing so produces a visible 2-vs-1 asymmetry).
+    full = [sep, *lines, ""]
     new_height = len(full)
     old_height = ctx["status_height"]
 
