@@ -399,3 +399,34 @@ def test_load_bindings_reads_well_formed_file(tmp_path):
     payload = {"ccmux": {"pane_id": "%1", "current_session_id": "abc"}}
     path.write_text(json.dumps(payload))
     assert load_bindings(path) == payload
+
+
+def test_snapshot_writes_current_bindings(tmp_path):
+    from ccmux_core.bindings import load_bindings, snapshot
+
+    events = tmp_path / "events.jsonl"
+    _write_events(
+        events,
+        [
+            _ev("session_start", "S1", tmux="alpha", pane="%1", ts="T1"),
+            _ev("session_start", "S2", tmux="beta", pane="%2", ts="T2"),
+            _ev("session_end", "S2", tmux="beta", payload={"reason": "exit"}, ts="T3"),
+        ],
+    )
+    out_path = tmp_path / "bindings.json"
+    lock_path = tmp_path / "bindings.lock"
+
+    written = snapshot(
+        events_path=events,
+        bindings_path=out_path,
+        lock_path=lock_path,
+    )
+    assert written == 2, "two tmux sessions seen (one live, one ended)"
+
+    data = load_bindings(out_path)
+    assert set(data.keys()) == {"alpha", "beta"}
+    assert data["alpha"]["current_session_id"] == "S1"
+    assert data["alpha"]["ended_at"] is None
+    assert data["beta"]["current_session_id"] is None
+    assert data["beta"]["ended_at"] == "T3"
+    assert data["beta"]["session_id_history"] == ["S2"]

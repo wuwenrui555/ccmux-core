@@ -289,3 +289,56 @@ def load_bindings(path: Path) -> dict[str, dict]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _mutable_to_dict(b: _MutableBinding) -> dict:
+    return {
+        "pane_id": b.pane_id,
+        "window_id": b.window_id,
+        "current_session_id": b.current_session_id,
+        "session_id_history": list(b.session_id_history),
+        "first_seen_at": b.first_seen_at,
+        "last_event_at": b.last_event_at,
+        "ended_at": b.ended_at,
+    }
+
+
+def snapshot(
+    events_path: Path | None = None,
+    bindings_path: Path | None = None,
+    lock_path: Path | None = None,
+) -> int:
+    """One-shot full rebuild of the bindings file from ``events.jsonl``.
+
+    Walks the entire event log, folds via :func:`_step`, atomic-writes
+    the resulting dict. Returns the number of tmux sessions written.
+    """
+    from .config import ccmux_core_dir
+
+    events_path = events_path if events_path is not None else _default_events_path()
+    bindings_path = (
+        bindings_path
+        if bindings_path is not None
+        else ccmux_core_dir() / "bindings.json"
+    )
+    lock_path = (
+        lock_path
+        if lock_path is not None
+        else bindings_path.with_suffix(bindings_path.suffix + ".lock")
+    )
+
+    bindings: dict[str, _MutableBinding] = {}
+    if events_path.exists():
+        for raw_line in events_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            _step(bindings, ev)
+
+    payload = {name: _mutable_to_dict(b) for name, b in bindings.items()}
+    _atomic_write(bindings_path, lock_path, payload)
+    return len(payload)
