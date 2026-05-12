@@ -669,6 +669,14 @@ async def _watch_async(
         else:
             ctx["last_emit_was_spinner"] = False
 
+    # Clear the screen (including scrollback) so watch starts on a
+    # fresh canvas. Only when status bar is active — non-TTY / JSON
+    # mode should not clobber the parent terminal.
+    if ctx["status_enabled"]:
+        # \x1b[H = cursor home, \x1b[2J = erase display, \x1b[3J = erase scrollback.
+        sys.stdout.write("\x1b[H\x1b[2J\x1b[3J")
+        sys.stdout.flush()
+
     # Install SIGWINCH so the bar re-renders to the new size on
     # terminal resize. Linux-only; wrap for non-Unix safety. Closure
     # captures ctx so the handler can re-emit.
