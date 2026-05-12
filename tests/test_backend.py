@@ -980,3 +980,231 @@ async def test_decision_listener_bound_in_aenter_unbound_in_aexit(tmp_path):
     # after exit, socket file removed and listener is None
     assert not sock_path.exists()
     assert b._decision_listener is None
+
+
+@pytest.mark.asyncio
+async def test_respond_permission_allow_once(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={},
+            request_id="r-1",
+        )
+        listener = MagicMock()
+        listener.respond = AsyncMock()
+        b._decision_listener = listener
+        await b.respond_permission(decision="allow", mode="once")
+
+    call_args = listener.respond.call_args
+    assert call_args.args[0] == "r-1"
+    payload = call_args.args[1]
+    assert payload["hookSpecificOutput"]["hookEventName"] == "PermissionRequest"
+    assert payload["hookSpecificOutput"]["decision"]["behavior"] == "allow"
+    # allow + mode=once should NOT add updatedPermissions
+    assert "updatedPermissions" not in payload["hookSpecificOutput"]["decision"]
+
+
+@pytest.mark.asyncio
+async def test_respond_permission_deny_carries_message(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={},
+            request_id="r-2",
+        )
+        listener = MagicMock()
+        listener.respond = AsyncMock()
+        b._decision_listener = listener
+        await b.respond_permission(decision="deny", message="no thanks")
+
+    payload = listener.respond.call_args.args[1]
+    assert payload["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+    assert payload["hookSpecificOutput"]["decision"]["message"] == "no thanks"
+
+
+@pytest.mark.asyncio
+async def test_respond_permission_deny_default_message(tmp_path):
+    """deny without explicit message should still emit a fallback message."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={},
+            request_id="r-2",
+        )
+        listener = MagicMock()
+        listener.respond = AsyncMock()
+        b._decision_listener = listener
+        await b.respond_permission(decision="deny")
+
+    payload = listener.respond.call_args.args[1]
+    dec = payload["hookSpecificOutput"]["decision"]
+    assert dec["behavior"] == "deny"
+    assert "message" in dec and dec["message"]  # non-empty fallback
+
+
+@pytest.mark.asyncio
+async def test_respond_permission_always_includes_updated_permissions(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={
+                "permission_suggestions": [{"type": "addRule", "rule": "Bash:*"}]
+            },
+            request_id="r-3",
+        )
+        listener = MagicMock()
+        listener.respond = AsyncMock()
+        b._decision_listener = listener
+        await b.respond_permission(decision="allow", mode="always")
+
+    payload = listener.respond.call_args.args[1]
+    dec = payload["hookSpecificOutput"]["decision"]
+    assert dec["behavior"] == "allow"
+    assert dec["updatedPermissions"] == [{"type": "addRule", "rule": "Bash:*"}]
+
+
+@pytest.mark.asyncio
+async def test_respond_permission_all_mode_includes_updated_permissions(tmp_path):
+    """mode='all' also pulls from permission_suggestions (broader scope)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={"permission_suggestions": [{"type": "X"}]},
+            request_id="r-4",
+        )
+        listener = MagicMock()
+        listener.respond = AsyncMock()
+        b._decision_listener = listener
+        await b.respond_permission(decision="allow", mode="all")
+
+    dec = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"]
+    assert dec["updatedPermissions"] == [{"type": "X"}]
+
+
+@pytest.mark.asyncio
+async def test_respond_permission_bypass_does_not_add_updated_permissions(tmp_path):
+    """bypass mode just allows (claude must already have --allow-dangerously-skip-permissions)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={"permission_suggestions": [{"type": "X"}]},
+            request_id="r-5",
+        )
+        listener = MagicMock()
+        listener.respond = AsyncMock()
+        b._decision_listener = listener
+        await b.respond_permission(decision="allow", mode="bypass")
+
+    dec = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"]
+    assert dec["behavior"] == "allow"
+    assert "updatedPermissions" not in dec
+
+
+@pytest.mark.asyncio
+async def test_respond_permission_in_non_blocked_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import WrongStateError
+    from ccmux_core.state import Idle
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Idle(reason="stop")
+        with pytest.raises(WrongStateError):
+            await b.respond_permission(decision="allow", mode="once")
+
+
+@pytest.mark.asyncio
+async def test_respond_permission_wrong_kind_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import WrongBlockedKindError
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="ask_user",
+            tool_name="AskUserQuestion",
+            tool_input={},
+            request_id="r-x",
+        )
+        with pytest.raises(WrongBlockedKindError):
+            await b.respond_permission(decision="allow", mode="once")
+
+
+@pytest.mark.asyncio
+async def test_respond_permission_after_expired_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import BlockedExpiredError
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={},
+            request_id="r-x",
+            expired=True,
+        )
+        with pytest.raises(BlockedExpiredError):
+            await b.respond_permission(decision="allow", mode="once")

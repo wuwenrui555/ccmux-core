@@ -24,7 +24,7 @@ import time
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from ccmux_spinner import Activity, PaneCaptureError, SpinnerMonitor
 from claude_tap import ClaudeMessage, DecisionListener, EventStream, MessageStream
@@ -330,6 +330,68 @@ class Backend:
         await self.send_keys("Escape", literal=False)
         await self.send_keys("C-u", literal=False)
         self._pending.clear()
+
+    async def respond_permission(
+        self,
+        *,
+        decision: Literal["allow", "deny"],
+        mode: Literal["once", "always", "all", "bypass"] | None = None,
+        message: str | None = None,
+    ) -> None:
+        """Respond to a Blocked(kind='permission') dialog.
+
+        Modes (decision='allow'):
+          'once'   → behavior:allow (no persistent rule)
+          'always' → behavior:allow + updatedPermissions from suggestions
+          'all'    → same as always but broader scope (carries suggestions)
+          'bypass' → behavior:allow (claude must have been launched with
+                     --allow-dangerously-skip-permissions for this to take
+                     effect; we just emit allow)
+
+        decision='deny' → behavior:deny + message (with fallback if none given)
+        """
+        from .error import (
+            BlockedExpiredError,
+            WrongBlockedKindError,
+            WrongStateError,
+        )
+        from .state import Blocked
+
+        state = self._state
+        if not isinstance(state, Blocked):
+            raise WrongStateError(
+                f"respond_permission requires Blocked state, got {type(state).__name__}"
+            )
+        if state.kind != "permission":
+            raise WrongBlockedKindError(
+                f"respond_permission requires kind='permission', got kind={state.kind!r}"
+            )
+        if state.expired:
+            raise BlockedExpiredError(
+                "decision.sock path is expired; use send_keys to navigate the TUI."
+            )
+
+        inner: dict = {"behavior": decision}
+        if decision == "deny":
+            inner["message"] = message or "User denied permission via ccmux."
+        elif decision == "allow":
+            if mode in ("always", "all"):
+                suggestions = (state.tool_input or {}).get(
+                    "permission_suggestions"
+                ) or []
+                if suggestions:
+                    inner["updatedPermissions"] = suggestions
+            # mode in ("once", "bypass", None) → just behavior:allow
+
+        decision_json = {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": inner,
+            }
+        }
+        assert self._decision_listener is not None, "listener not bound"
+        assert state.request_id is not None, "no request_id on Blocked state"
+        await self._decision_listener.respond(state.request_id, decision_json)
 
     async def _flush_pending(self, *, new_state: State | None) -> None:
         """Called whenever we emit a new state. If the new state is
