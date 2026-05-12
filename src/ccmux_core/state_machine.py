@@ -159,10 +159,18 @@ def apply(
         else:
             new_state = Working(tool_name=tool or None)
     elif et == "permission_request":
+        tool = payload.get("tool_name", "") or ""
+        if tool == "AskUserQuestion":
+            kind: Literal["permission", "ask_user", "exit_plan_mode"] = "ask_user"
+        elif tool == "ExitPlanMode":
+            kind = "exit_plan_mode"
+        else:
+            kind = "permission"
         new_state = Blocked(
-            kind="permission",
-            tool_name=payload.get("tool_name", "") or "",
+            kind=kind,
+            tool_name=tool,
             tool_input=payload.get("tool_input"),
+            request_id=payload.get("request_id") or None,
         )
     elif et == "post_tool_use":
         new_state = Working(tool_name=None)
