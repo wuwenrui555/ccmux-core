@@ -302,24 +302,53 @@ def _state_body(state: State, latest_spinner_text: str | None) -> str:
 
 
 def _event_label(event: dict) -> str:
-    return f"EVENT · {event.get('event_type', '?')}"
+    """Compact label for a hook event.
+
+    For tool-related hooks, the tool name goes into the label so the
+    body can stay clean JSON (mirroring the L1 ``TOOL · <name>`` /
+    ``PERMISSION · <name>`` shape):
+
+        EVENT · pre_tool_use · Bash
+        EVENT · post_tool_use · Bash
+        EVENT · permission_request · Bash
+
+    For non-tool hooks, just ``EVENT · <type>``.
+    """
+    et = event.get("event_type", "?")
+    tool = (event.get("payload") or {}).get("tool_name")
+    if tool and et in ("pre_tool_use", "post_tool_use", "permission_request"):
+        return f"EVENT · {et} · {tool}"
+    return f"EVENT · {et}"
 
 
 def _event_body(event: dict) -> str:
+    """Body for a hook event — just the relevant payload content.
+
+    Mirrors the L1 message body style (no ``tool=...`` prefix; the
+    tool name is in the label via :func:`_event_label`).
+
+        pre_tool_use / permission_request → json.dumps(tool_input)
+        post_tool_use                     → json.dumps(tool_response)
+        user_prompt_submit                → prompt text (escaped)
+        stop                              → last_assistant_message
+        notification                      → message text
+        session_end                       → reason=<...>
+        session_start                     → ""
+    """
     payload = event.get("payload") or {}
     et = event.get("event_type", "")
     if et == "user_prompt_submit":
         return json.dumps(payload.get("prompt", ""), ensure_ascii=False)[1:-1]
-    if et in ("pre_tool_use", "post_tool_use", "permission_request"):
-        tool = payload.get("tool_name", "?")
+    if et in ("pre_tool_use", "permission_request"):
         tool_input = payload.get("tool_input")
-        if tool_input:
-            # Compact one-line JSON of the input so we can see what
-            # the tool was called with (e.g. Bash command, file path,
-            # AskUserQuestion question, etc.). _trim_body downstream
-            # caps the length.
-            return f"tool={tool}  {json.dumps(tool_input, ensure_ascii=False)}"
-        return f"tool={tool}"
+        return json.dumps(tool_input, ensure_ascii=False) if tool_input else ""
+    if et == "post_tool_use":
+        tool_response = payload.get("tool_response")
+        return (
+            json.dumps(tool_response, ensure_ascii=False)
+            if tool_response is not None
+            else ""
+        )
     if et == "notification":
         return json.dumps(payload.get("message", ""), ensure_ascii=False)[1:-1]
     if et == "stop":

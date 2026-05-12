@@ -135,13 +135,58 @@ def test_state_body_dead_with_detail():
     assert body == "reason=session_end · detail=user_exit"
 
 
-def test_event_label_includes_type():
-    assert _event_label({"event_type": "pre_tool_use"}) == "EVENT · pre_tool_use"
+def test_event_label_without_tool_falls_back_to_type():
+    assert _event_label({"event_type": "stop"}) == "EVENT · stop"
 
 
-def test_event_body_pre_tool_use_shows_tool():
+def test_event_label_with_tool_includes_tool_name():
+    """Tool-related hooks put tool name in the label (mirrors L1
+    'TOOL · Bash' style), so body can stay clean JSON."""
     ev = {"event_type": "pre_tool_use", "payload": {"tool_name": "Bash"}}
-    assert _event_body(ev) == "tool=Bash"
+    assert _event_label(ev) == "EVENT · pre_tool_use · Bash"
+    ev = {"event_type": "post_tool_use", "payload": {"tool_name": "Read"}}
+    assert _event_label(ev) == "EVENT · post_tool_use · Read"
+    ev = {
+        "event_type": "permission_request",
+        "payload": {"tool_name": "Bash"},
+    }
+    assert _event_label(ev) == "EVENT · permission_request · Bash"
+
+
+def test_event_body_pre_tool_use_emits_tool_input_json():
+    """Body is just the JSON of tool_input (no 'tool=' prefix —
+    tool name lives in the label)."""
+    ev = {
+        "event_type": "pre_tool_use",
+        "payload": {"tool_name": "Bash", "tool_input": {"command": "ls"}},
+    }
+    assert _event_body(ev) == '{"command": "ls"}'
+
+
+def test_event_body_pre_tool_use_empty_when_no_input():
+    ev = {"event_type": "pre_tool_use", "payload": {"tool_name": "Bash"}}
+    assert _event_body(ev) == ""
+
+
+def test_event_body_post_tool_use_emits_tool_response_json():
+    ev = {
+        "event_type": "post_tool_use",
+        "payload": {
+            "tool_name": "Bash",
+            "tool_response": {"output": "ok", "exit_code": 0},
+        },
+    }
+    out = _event_body(ev)
+    assert "ok" in out
+    assert "exit_code" in out
+
+
+def test_event_body_permission_request_emits_tool_input_json():
+    ev = {
+        "event_type": "permission_request",
+        "payload": {"tool_name": "Bash", "tool_input": {"command": "rm"}},
+    }
+    assert _event_body(ev) == '{"command": "rm"}'
 
 
 def test_event_body_user_prompt_submit_shows_prompt():
