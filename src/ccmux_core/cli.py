@@ -160,6 +160,80 @@ def _pretty_separator() -> str:
     return prefix + "─" * rest
 
 
+_ANSI = {
+    "reset": "\x1b[0m",
+    "dim": "\x1b[2m",
+    "bold": "\x1b[1m",
+    # state colors
+    "green": "\x1b[32m",  # Idle
+    "yellow": "\x1b[33m",  # Working
+    "magenta": "\x1b[35m",  # Blocked
+    "red_dim": "\x1b[2;31m",  # Dead
+    # label colors
+    "cyan": "\x1b[36m",  # STATE
+    "blue": "\x1b[34m",  # EVENT
+    "white_bold": "\x1b[1;37m",  # MESSAGE
+    "gray": "\x1b[90m",  # SPINNER
+}
+
+
+def _state_summary(state) -> str:
+    """Compact state label for the header. e.g. 'IDLE(stop)',
+    'WORKING(Bash)', 'WORKING(--)', 'BLOCKED:perm', 'DEAD'."""
+    if state is None:
+        return "--"
+    name = type(state).__name__.upper()
+    if isinstance(state, Idle):
+        return f"{name}({state.reason})"
+    if isinstance(state, Working):
+        tool = state.tool_name or "--"
+        return f"{name}({tool})"
+    if isinstance(state, Blocked):
+        marker = "expired" if state.expired else state.kind
+        return f"{name}({marker})"
+    if isinstance(state, Dead):
+        return name
+    return name
+
+
+def _color_for_state(state) -> str:
+    if isinstance(state, Idle):
+        return _ANSI["green"]
+    if isinstance(state, Working):
+        return _ANSI["yellow"]
+    if isinstance(state, Blocked):
+        return _ANSI["magenta"]
+    if isinstance(state, Dead):
+        return _ANSI["red_dim"]
+    return ""
+
+
+def _color_for_label(label: str) -> str:
+    # label is "STATE · ..." / "EVENT · ..." / "MESSAGE · ..." / etc.
+    head = label.split(" ", 1)[0].upper() if label else ""
+    if head in {"IDLE", "WORKING", "BLOCKED", "DEAD"}:
+        # state stream: color by state type
+        return {
+            "IDLE": _ANSI["green"],
+            "WORKING": _ANSI["yellow"],
+            "BLOCKED": _ANSI["magenta"],
+            "DEAD": _ANSI["red_dim"],
+        }.get(head, "")
+    if head == "EVENT":
+        return _ANSI["blue"]
+    if head == "ASSISTANT" or head == "USER":
+        return _ANSI["white_bold"]
+    if head == "SPINNER":
+        return _ANSI["gray"]
+    return ""
+
+
+def _paint(text: str, color: str, *, enabled: bool) -> str:
+    if not enabled or not color:
+        return text
+    return f"{color}{text}{_ANSI['reset']}"
+
+
 def _header(
     *,
     ts: str,
@@ -167,11 +241,24 @@ def _header(
     window_id: str | None,
     primary_sid: str | None,
     label: str,
+    state: State | None = None,
+    use_color: bool = False,
 ) -> str:
-    """``[ HH:MM:SS ccmux@80 504921bb ] LABEL``."""
+    """``[ HH:MM:SS ccmux@80 504921bb · WORKING(Bash) ] LABEL``.
+
+    The state slot (after the sid, separated by `` · ``) is omitted when
+    ``state is None`` to keep the legacy layout for the first emit before
+    any state has arrived. When ``use_color`` is true, the state slot and
+    the label are wrapped in ANSI color escapes.
+    """
     sid = (primary_sid or "")[:8] or "--------"
     tmux_frag = f"{tmux_session}{window_id or ''}"
-    return f"[ {ts} {tmux_frag} {sid} ] {label}"
+    label_painted = _paint(label, _color_for_label(label), enabled=use_color)
+    if state is None:
+        return f"[ {ts} {tmux_frag} {sid} ] {label_painted}"
+    summary = _state_summary(state)
+    summary_painted = _paint(summary, _color_for_state(state), enabled=use_color)
+    return f"[ {ts} {tmux_frag} {sid} · {summary_painted} ] {label_painted}"
 
 
 # ----- per-stream formatters --------------------------------------------
@@ -290,6 +377,8 @@ def _pretty_block(
     tmux_session: str,
     window_id: str | None,
     primary_sid: str | None,
+    state: State | None = None,
+    use_color: bool = False,
 ) -> str:
     lines = [
         _pretty_separator(),
@@ -299,6 +388,8 @@ def _pretty_block(
             window_id=window_id,
             primary_sid=primary_sid,
             label=label,
+            state=state,
+            use_color=use_color,
         ),
         _trim_body(body),
     ]
@@ -310,7 +401,7 @@ def _pretty_block(
 # ---------------------------------------------------------------------------
 
 
-async def _watch_async(session: str, pretty: bool) -> int:
+async def _watch_async(session: str, pretty: bool, no_color: bool = False) -> int:
     bindings = list_live_tmux_bindings()
     match = next((b for b in bindings if b.tmux_session == session), None)
     if match is None:
@@ -326,6 +417,7 @@ async def _watch_async(session: str, pretty: bool) -> int:
         "window_id": match.window_id,
         "primary_sid": match.primary_session_id,
         "latest_spinner_text": None,  # type: str | None
+        "current_state": None,  # type: State | None
         # In-place spinner-refresh state. ``last_emit_was_spinner`` is
         # True when the most recent pretty block printed was a SPINNER
         # block; ``spinner_block_lines`` is its line count (including
@@ -335,6 +427,7 @@ async def _watch_async(session: str, pretty: bool) -> int:
         # one updating block rather than a wall of duplicates.
         "last_emit_was_spinner": False,
         "spinner_block_lines": 0,
+        "color_enabled": pretty and sys.stdout.isatty() and not no_color,
     }
 
     can_overwrite = pretty and sys.stdout.isatty()
@@ -349,6 +442,8 @@ async def _watch_async(session: str, pretty: bool) -> int:
             tmux_session=ctx["tmux_session"],
             window_id=ctx["window_id"],
             primary_sid=ctx["primary_sid"],
+            state=ctx["current_state"],
+            use_color=ctx["color_enabled"],
         )
         # Block is N text lines joined by \n, then we append a blank
         # line. Total occupied terminal lines = N + 1.
@@ -379,6 +474,7 @@ async def _watch_async(session: str, pretty: bool) -> int:
 
         async def pump_states():
             async for s in b.states():
+                ctx["current_state"] = s
                 if pretty:
                     _emit_pretty(
                         _state_label(s),
@@ -466,7 +562,13 @@ async def _watch_async(session: str, pretty: bool) -> int:
 
 def cmd_watch(args) -> int:
     try:
-        return asyncio.run(_watch_async(args.session, pretty=not args.json))
+        return asyncio.run(
+            _watch_async(
+                args.session,
+                pretty=not args.json,
+                no_color=getattr(args, "no_color", False),
+            )
+        )
     except KeyboardInterrupt:
         return 0
 
@@ -491,6 +593,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="One JSON object per line instead of pretty blocks",
+    )
+    p_watch.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable ANSI colors even on a TTY",
     )
     p_watch.set_defaults(fn=cmd_watch)
 

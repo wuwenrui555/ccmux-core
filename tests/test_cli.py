@@ -218,3 +218,90 @@ def test_overwrite_prefix_uses_last_block_line_count():
         last_block_lines=7,
     )
     assert "\x1b[7A" in out
+
+
+# ---------------------------------------------------------------------------
+# State summary + ANSI color
+# ---------------------------------------------------------------------------
+
+
+def test_state_summary_for_each_state():
+    from ccmux_core.cli import _state_summary
+    from ccmux_core.state import Blocked, Dead, Idle, Working
+
+    assert _state_summary(None) == "--"
+    assert _state_summary(Idle(reason="stop")) == "IDLE(stop)"
+    assert _state_summary(Working(tool_name="Bash")) == "WORKING(Bash)"
+    assert _state_summary(Working(tool_name=None)) == "WORKING(--)"
+    assert (
+        _state_summary(Blocked(kind="permission", tool_name="Bash", tool_input={}))
+        == "BLOCKED(permission)"
+    )
+    assert (
+        _state_summary(
+            Blocked(kind="permission", tool_name="Bash", tool_input={}, expired=True)
+        )
+        == "BLOCKED(expired)"
+    )
+    assert _state_summary(Dead(reason="session_end")) == "DEAD"
+
+
+def test_header_with_state_slot():
+    from ccmux_core.cli import _header
+    from ccmux_core.state import Working
+
+    out = _header(
+        ts="12:34:56",
+        tmux_session="ccmux",
+        window_id="@80",
+        primary_sid="504921bb-...-...",
+        label="ASSISTANT · hook",
+        state=Working(tool_name="Bash"),
+        use_color=False,
+    )
+    assert "[ 12:34:56 ccmux@80 504921bb · WORKING(Bash) ] ASSISTANT · hook" == out
+
+
+def test_header_omits_state_slot_when_none():
+    from ccmux_core.cli import _header
+
+    out = _header(
+        ts="12:34:56",
+        tmux_session="ccmux",
+        window_id="@80",
+        primary_sid="504921bb",
+        label="EVENT · session_start",
+        state=None,
+        use_color=False,
+    )
+    assert "[ 12:34:56 ccmux@80 504921bb ] EVENT · session_start" == out
+
+
+def test_header_with_color_wraps_state_and_label():
+    from ccmux_core.cli import _ANSI, _header
+    from ccmux_core.state import Idle
+
+    out = _header(
+        ts="12:34:56",
+        tmux_session="ccmux",
+        window_id="@80",
+        primary_sid="504921bb",
+        label="IDLE",
+        state=Idle(reason="stop"),
+        use_color=True,
+    )
+    # state colored green
+    assert _ANSI["green"] in out
+    # reset present at least once
+    assert _ANSI["reset"] in out
+
+
+def test_color_for_label_known_heads():
+    from ccmux_core.cli import _ANSI, _color_for_label
+
+    assert _color_for_label("EVENT · stop") == _ANSI["blue"]
+    assert _color_for_label("ASSISTANT · hook") == _ANSI["white_bold"]
+    assert _color_for_label("SPINNER · Spinner") == _ANSI["gray"]
+    assert _color_for_label("IDLE") == _ANSI["green"]
+    assert _color_for_label("WORKING") == _ANSI["yellow"]
+    assert _color_for_label("") == ""
