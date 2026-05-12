@@ -1208,3 +1208,200 @@ async def test_respond_permission_after_expired_raises(tmp_path):
         )
         with pytest.raises(BlockedExpiredError):
             await b.respond_permission(decision="allow", mode="once")
+
+
+@pytest.mark.asyncio
+async def test_respond_exit_plan_manual(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="exit_plan_mode",
+            tool_name="ExitPlanMode",
+            tool_input={"plan": "# Plan\n- step 1"},
+            request_id="r-1",
+        )
+        b._decision_listener = listener
+        await b.respond_exit_plan(mode="manual")
+
+    dec = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"]
+    assert dec["behavior"] == "allow"
+    assert dec["updatedInput"] == {"plan": "# Plan\n- step 1"}
+    # manual should NOT add setMode
+    assert "updatedPermissions" not in dec
+
+
+@pytest.mark.asyncio
+async def test_respond_exit_plan_auto_accept_includes_set_mode(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="exit_plan_mode",
+            tool_name="ExitPlanMode",
+            tool_input={"plan": "..."},
+            request_id="r-2",
+        )
+        b._decision_listener = listener
+        await b.respond_exit_plan(mode="autoAccept")
+
+    dec = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"]
+    assert dec["behavior"] == "allow"
+    assert dec["updatedPermissions"] == [
+        {"type": "setMode", "mode": "auto", "destination": "session"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_respond_exit_plan_ultraplan_is_deny_with_message(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="exit_plan_mode",
+            tool_name="ExitPlanMode",
+            tool_input={"plan": "..."},
+            request_id="r-3",
+        )
+        b._decision_listener = listener
+        await b.respond_exit_plan(mode="ultraplan")
+
+    dec = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"]
+    assert dec["behavior"] == "deny"
+    assert "Ultraplan" in dec["message"]
+
+
+@pytest.mark.asyncio
+async def test_respond_exit_plan_deny_default_message(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="exit_plan_mode",
+            tool_name="ExitPlanMode",
+            tool_input={"plan": "..."},
+            request_id="r-4",
+        )
+        b._decision_listener = listener
+        await b.respond_exit_plan(mode="deny")
+
+    dec = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"]
+    assert dec["behavior"] == "deny"
+    assert "rejected" in dec["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_respond_exit_plan_feedback_overrides_mode(tmp_path):
+    """If feedback is non-empty, it forces a deny regardless of mode."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    listener = MagicMock()
+    listener.respond = AsyncMock()
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="exit_plan_mode",
+            tool_name="ExitPlanMode",
+            tool_input={"plan": "..."},
+            request_id="r-5",
+        )
+        b._decision_listener = listener
+        # even mode=manual gets overridden by non-empty feedback
+        await b.respond_exit_plan(mode="manual", feedback="add tests first")
+
+    dec = listener.respond.call_args.args[1]["hookSpecificOutput"]["decision"]
+    assert dec["behavior"] == "deny"
+    assert "add tests first" in dec["message"]
+
+
+@pytest.mark.asyncio
+async def test_respond_exit_plan_in_wrong_kind_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import WrongBlockedKindError
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="permission",
+            tool_name="Bash",
+            tool_input={},
+            request_id="r-x",
+        )
+        with pytest.raises(WrongBlockedKindError):
+            await b.respond_exit_plan(mode="manual")
+
+
+@pytest.mark.asyncio
+async def test_respond_exit_plan_in_non_blocked_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import WrongStateError
+    from ccmux_core.state import Idle
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Idle(reason="stop")
+        with pytest.raises(WrongStateError):
+            await b.respond_exit_plan(mode="manual")
+
+
+@pytest.mark.asyncio
+async def test_respond_exit_plan_after_expired_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import BlockedExpiredError
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(
+            kind="exit_plan_mode",
+            tool_name="ExitPlanMode",
+            tool_input={},
+            request_id="r-x",
+            expired=True,
+        )
+        with pytest.raises(BlockedExpiredError):
+            await b.respond_exit_plan(mode="manual")

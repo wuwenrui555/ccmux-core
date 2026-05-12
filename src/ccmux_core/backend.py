@@ -393,6 +393,90 @@ class Backend:
         assert state.request_id is not None, "no request_id on Blocked state"
         await self._decision_listener.respond(state.request_id, decision_json)
 
+    async def respond_exit_plan(
+        self,
+        *,
+        mode: Literal["manual", "autoAccept", "ultraplan", "deny"],
+        feedback: str | None = None,
+    ) -> None:
+        """Respond to a Blocked(kind='exit_plan_mode') dialog.
+
+        Modes:
+          'manual'     → allow + updatedInput (the original plan)
+          'autoAccept' → allow + updatedInput + setMode auto for session
+          'ultraplan'  → deny + message (claude has no native ultraplan,
+                         so this becomes a 'try again with ultraplan' hint)
+          'deny'       → deny + message (with optional feedback)
+
+        If `feedback` is non-empty, it overrides mode and becomes a
+        deny+message regardless.
+        """
+        from .error import (
+            BlockedExpiredError,
+            WrongBlockedKindError,
+            WrongStateError,
+        )
+        from .state import Blocked
+
+        state = self._state
+        if not isinstance(state, Blocked):
+            raise WrongStateError(
+                f"respond_exit_plan requires Blocked state, got {type(state).__name__}"
+            )
+        if state.kind != "exit_plan_mode":
+            raise WrongBlockedKindError(
+                f"respond_exit_plan requires kind='exit_plan_mode', got kind={state.kind!r}"
+            )
+        if state.expired:
+            raise BlockedExpiredError(
+                "decision.sock path is expired; use send_keys to navigate the TUI."
+            )
+
+        feedback_clean = (feedback or "").strip()
+        inner: dict
+
+        if feedback_clean:
+            inner = {
+                "behavior": "deny",
+                "message": (
+                    "User rejected the plan via ccmux and wants this change: "
+                    f"{feedback_clean}"
+                ),
+            }
+        elif mode == "deny":
+            inner = {
+                "behavior": "deny",
+                "message": "User rejected the plan via ccmux.",
+            }
+        elif mode == "ultraplan":
+            inner = {
+                "behavior": "deny",
+                "message": (
+                    "User chose Ultraplan via ccmux. Refine this plan with "
+                    "Ultraplan on Claude Code on the web."
+                ),
+            }
+        else:
+            # manual or autoAccept → allow
+            inner = {
+                "behavior": "allow",
+                "updatedInput": state.tool_input or {},
+            }
+            if mode == "autoAccept":
+                inner["updatedPermissions"] = [
+                    {"type": "setMode", "mode": "auto", "destination": "session"}
+                ]
+
+        decision_json = {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": inner,
+            }
+        }
+        assert self._decision_listener is not None, "listener not bound"
+        assert state.request_id is not None, "no request_id on Blocked state"
+        await self._decision_listener.respond(state.request_id, decision_json)
+
     async def _flush_pending(self, *, new_state: State | None) -> None:
         """Called whenever we emit a new state. If the new state is
         Idle and the queue is non-empty, send the queued prompts as
