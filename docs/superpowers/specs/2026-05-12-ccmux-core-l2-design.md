@@ -537,27 +537,56 @@ The tmux-send-keys path uses tmux's native key names directly.
 Both paths must accept the same input vocabulary; the dispatch
 based on copy-mode happens transparently inside `send_keys`.
 
-### Pane capture in copy mode
+### Pane capture in copy mode (defensive change recommended)
 
-ccmux-spinner currently uses `tmux capture-pane -p -J -t <pane>`,
-which captures the **visible region** of the pane. In copy mode,
-the visible region is wherever the user scrolled to — not
-claude's live output.
+Initial concern: ccmux-spinner uses `tmux capture-pane -p -J -t <pane>`
+without `-S/-E`. Was suspected to read the user's scrolled viewport
+when the pane is in copy mode, returning stale content for spinner
+detection.
 
-Fix: pin the capture to the buffer tail using `-S -<N> -E -`:
+**Empirically tested 2026-05-12** (50-line bash session, pane 125×56,
+copy mode with `scroll_position=30`, plus new output written while
+viewport scrolled):
+
+| Setup                              | Default capture returns           |
+|------------------------------------|-----------------------------------|
+| Not in copy mode                   | Active screen tail (LINE_46..50)  |
+| Copy mode, viewport scrolled       | **Same — active screen tail**     |
+| Copy mode, scrolled, new output    | **Live tail including new lines** |
+
+Conclusion: `tmux capture-pane -p` returns the **active screen**
+(where the program is writing), not the copy-mode viewport. The
+scrolled viewport is purely a user-visible overlay; capture-pane
+operates on the active screen buffer regardless of copy mode.
+
+The current default behavior is **correct for ccmux-spinner's
+present use case** (bash-like programs with normal pane sizes, on
+Linux tmux).
+
+#### Recommended defensive change
+
+Despite the above, switch to explicit `-S -200 -E -`:
 
 ```python
 ["tmux", "capture-pane", "-p", "-J", "-t", pane_id, "-S", "-200", "-E", "-"]
 ```
 
-`-S -200` starts 200 lines into history (from the buffer tail);
-`-E -` ends at the buffer tail (where claude is writing, not the
-copy-mode viewport). 200 lines is generous — spinner detection
-only inspects the last few rows.
+Rationale:
 
-This is a change to ccmux-spinner, not ccmux-core, but it's
-required for spinner detection to work correctly while the user is
-in copy mode.
+- **Small panes**: with a 10-row pane, the default returns only 10
+  rows; not enough context for some spinner-detection heuristics.
+  `-S -200` always returns up to 200 rows of history-plus-current.
+- **Cross-platform tmux variants**: OpenBSD vs Linux tmux
+  occasionally diverge on edge cases of "visible region" semantics.
+  Explicit `-S/-E` constrains the behavior precisely.
+- **Future TUI changes**: if claude adds multi-row spinners,
+  scrolling status bars, or similar, the extra history buffer is
+  insurance against missing context.
+- **Cost**: negligible. Spinner detection inspects only the last
+  few rows; extra captured lines are discarded by the parser.
+
+This is a one-line change to ccmux-spinner, not ccmux-core; tracked
+here because ccmux-core depends on ccmux-spinner.
 
 ## Naming convention
 
