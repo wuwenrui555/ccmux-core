@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from ccmux_core.bindings import TmuxBinding
 from ccmux_core.cli import (
     _bindings_table,
     _event_body,
@@ -15,7 +16,6 @@ from ccmux_core.cli import (
     _state_to_json,
     build_parser,
 )
-from ccmux_core.discover import TmuxBinding
 from ccmux_core.state import Blocked, Dead, Idle, Working
 
 
@@ -38,6 +38,58 @@ def test_parser_version():
     assert args.cmd == "version"
 
 
+def test_parser_bindings_snapshot_default_output():
+    p = build_parser()
+    args = p.parse_args(["bindings", "snapshot"])
+    assert args.cmd == "bindings"
+    assert args.bindings_cmd == "snapshot"
+    assert args.output is None
+
+
+def test_parser_bindings_snapshot_with_output():
+    p = build_parser()
+    args = p.parse_args(["bindings", "snapshot", "--output", "/tmp/x.json"])
+    assert args.output == "/tmp/x.json"
+
+
+def test_cmd_bindings_snapshot_writes_default_path(tmp_path, monkeypatch):
+    """The default path is derived from CCMUX_CORE_DIR; redirect it for the test."""
+    monkeypatch.setenv("CCMUX_CORE_DIR", str(tmp_path))
+    # Empty events file in claude-tap's location — point at our tmp.
+    events = tmp_path / "events.jsonl"
+    events.write_text("")
+    monkeypatch.setenv("CLAUDE_TAP_DIR", str(tmp_path))
+
+    p = build_parser()
+    args = p.parse_args(["bindings", "snapshot"])
+    rc = args.fn(args)
+    assert rc == 0
+    assert (tmp_path / "bindings.json").exists()
+
+
+def test_cmd_bindings_snapshot_returns_1_on_unwritable_path(
+    tmp_path, monkeypatch, capsys
+):
+    """Snapshot returning OSError (e.g. unwritable target) exits 1 with a friendly stderr message."""
+    monkeypatch.setenv("CLAUDE_TAP_DIR", str(tmp_path))
+    (tmp_path / "events.jsonl").write_text("")
+    # Point output at a path under a non-existent unwritable directory
+    bad_output = tmp_path / "nonexistent_root" / "subdir" / "bindings.json"
+    # Make the parent unwritable to force OSError on mkdir or write
+    parent = tmp_path / "nonexistent_root"
+    parent.mkdir()
+    parent.chmod(0o500)  # read+execute only, no write
+    try:
+        p = build_parser()
+        args = p.parse_args(["bindings", "snapshot", "--output", str(bad_output)])
+        rc = args.fn(args)
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "ccmux-core bindings snapshot:" in captured.err
+    finally:
+        parent.chmod(0o700)  # restore so tmp_path cleanup works
+
+
 def test_bindings_table_empty():
     out = _bindings_table([])
     assert "no live tmux sessions" in out.lower()
@@ -50,8 +102,11 @@ def test_bindings_table_single():
                 tmux_session="ccmux",
                 pane_id="%42",
                 window_id="@0",
-                primary_session_id="abc-12345",
+                current_session_id="abc-12345",
+                session_id_history=("abc-12345",),
+                first_seen_at="2026-05-11T01:55:42Z",
                 last_event_at="2026-05-11T01:55:42Z",
+                ended_at=None,
             )
         ]
     )
