@@ -750,8 +750,71 @@ def test_pane_overflow_drops_oldest():
         sys.stdout = orig
 
     assert len(pane._buf) == 2
-    assert pane._buf[0] is m2
-    assert pane._buf[1] is m3
+    # Buf stores (msg, state_snapshot, separator_ts) tuples; check the msg slot.
+    assert pane._buf[0][0] is m2
+    assert pane._buf[1][0] is m3
+
+
+def test_pane_state_snapshot_survives_repaint():
+    """Bug regression: after overflow, every block must keep the state
+    it had at push time, not get restamped to the current live state.
+    """
+    import io
+    import sys
+
+    from ccmux_core.cli import Pane
+    from ccmux_core.message import UserPrompt
+    from ccmux_core.state import Idle, Working
+
+    ctx = {
+        "tmux_session": "s",
+        "window_id": "@1",
+        "primary_sid": "abc",
+        "current_state": None,
+        "color_enabled": False,
+    }
+    pane = Pane(top=3, left_col=1, width=40, capacity=2, ctx=ctx)
+    sys.stdout = io.StringIO()
+    try:
+        ctx["current_state"] = Working(tool_name="Bash")
+        pane.push(UserPrompt(text="one", timestamp=1.0))
+        ctx["current_state"] = Idle(reason="stop")
+        pane.push(UserPrompt(text="two", timestamp=2.0))
+        # Force overflow; this will _repaint_all with whatever the live
+        # state is at this instant. The first two blocks must still
+        # remember THEIR state, not get restamped.
+        ctx["current_state"] = Working(tool_name="Read")
+        pane.push(UserPrompt(text="three", timestamp=3.0))
+    finally:
+        sys.stdout = sys.__stdout__
+
+    # Capacity 2, overflow once → buf holds msg2 + msg3, each tagged
+    # with the state it saw at push time.
+    assert len(pane._buf) == 2
+    _, s0, _ = pane._buf[0]
+    _, s1, _ = pane._buf[1]
+    assert isinstance(s0, Idle) and s0.reason == "stop"
+    assert isinstance(s1, Working) and s1.tool_name == "Read"
+
+
+def test_pretty_block_separator_ts_freezes_when_provided():
+    """When separator_ts is passed, the separator must use it verbatim
+    instead of generating a fresh wall-clock timestamp.
+    """
+    from ccmux_core.cli import _pretty_block
+
+    block = _pretty_block(
+        label="ASSISTANT",
+        body="hello",
+        ts="10:23:45",
+        tmux_session="ccmux",
+        window_id="@1",
+        primary_sid="abcd1234",
+        width=60,
+        separator_ts="12:34:56.789",
+    )
+    sep_line = block.split("\n")[0]
+    assert sep_line.startswith("─ 12:34:56.789 ")
 
 
 def test_pane_zero_capacity_is_noop():

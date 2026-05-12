@@ -162,11 +162,16 @@ def _trim_body(body: str, *, width: int | None = None) -> str:
     return body
 
 
-def _pretty_separator(*, width: int | None = None) -> str:
-    """``─ HH:MM:SS.mmm ─...─`` to a visual width matching pretty_width."""
+def _pretty_separator(*, width: int | None = None, now: str | None = None) -> str:
+    """``─ HH:MM:SS.mmm ─...─`` to a visual width matching pretty_width.
+
+    ``now`` lets callers freeze the timestamp at emit/push time so it
+    doesn't drift when the line gets re-rendered (e.g. by a Pane on
+    overflow repaint). Defaults to current wall-clock.
+    """
     w = _pretty_width() if width is None else width
-    now = _now_timestamp()
-    prefix = f"─ {now} "
+    ts = _now_timestamp() if now is None else now
+    prefix = f"─ {ts} "
     rest = max(0, w - len(prefix))
     return prefix + "─" * rest
 
@@ -489,10 +494,11 @@ def _pretty_block(
     state: State | None = None,
     use_color: bool = False,
     width: int | None = None,
+    separator_ts: str | None = None,
 ) -> str:
     w = _pretty_width() if width is None else width
     lines = [
-        _pretty_separator(width=w),
+        _pretty_separator(width=w, now=separator_ts),
         _header(
             ts=ts,
             tmux_session=tmux_session,
@@ -825,8 +831,15 @@ class Pane:
     def push(self, msg) -> None:
         if self.capacity <= 0:
             return
+        # Snapshot state and the separator timestamp *now* so they stay
+        # glued to this message across future _repaint_all calls.
+        # Without this, every repaint would re-render every block with
+        # the current live state and current wall-clock — so the moment
+        # one pane overflows, the entire column gets restamped.
+        snapshot_state = self._ctx["current_state"]
+        snapshot_now = _now_timestamp()
         full = len(self._buf) >= self.capacity
-        self._buf.append(msg)
+        self._buf.append((msg, snapshot_state, snapshot_now))
         if full:
             self._buf.popleft()
             self._repaint_all()
@@ -850,8 +863,8 @@ class Pane:
     def _paint_slot(self, idx: int) -> None:
         if self.width <= 0:
             return
-        msg = self._buf[idx]
-        block = self._render_block(msg)
+        msg, state, now = self._buf[idx]
+        block = self._render_block(msg, state, now)
         row_top = self.top + idx * _BLOCK_HEIGHT
         out: list[str] = ["\x1b[s"]
         # Block is 3 content lines; the 4th row of the slot is the
@@ -873,7 +886,7 @@ class Pane:
         for i in range(len(self._buf)):
             self._paint_slot(i)
 
-    def _render_block(self, msg) -> str:
+    def _render_block(self, msg, state, now) -> str:
         return _pretty_block(
             label=_l1_message_label(msg),
             body=_l1_message_body(msg),
@@ -881,9 +894,10 @@ class Pane:
             tmux_session=self._ctx["tmux_session"],
             window_id=self._ctx["window_id"],
             primary_sid=self._ctx["primary_sid"],
-            state=self._ctx["current_state"],
+            state=state,
             use_color=self._ctx["color_enabled"],
             width=self.width,
+            separator_ts=now,
         )
 
 
