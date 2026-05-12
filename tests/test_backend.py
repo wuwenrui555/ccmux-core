@@ -622,6 +622,23 @@ async def test_messages_emits_permission_request_from_event(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_backend_send_keys_delegates_to_keys_module(tmp_path):
+    """Backend.send_keys() should hand pane_id + keys + literal to keys.send_keys
+    via asyncio.to_thread (so the subprocess doesn't block the loop)."""
+    from unittest.mock import patch
+
+    from ccmux_core import Backend
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%9", events_path=events_path) as b:
+        with patch("ccmux_core.backend.send_keys") as sk:
+            await b.send_keys("hello", literal=True)
+        sk.assert_called_once_with("%9", "hello", literal=True)
+
+
+@pytest.mark.asyncio
 async def test_backend_grace_fires_when_pane_static_and_no_spinner(monkeypatch):
     """Esc-after-streaming case: SpinnerMonitor.current is non-Spinner
     AND last_pane_change_at is stale → fire interrupted.

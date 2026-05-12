@@ -31,6 +31,7 @@ from claude_tap import ClaudeMessage, EventStream, MessageStream
 from claude_tap.config import events_path as _default_events_path
 
 from . import config
+from .keys import send_keys
 from .message import (
     Message,
     PermissionRequest,
@@ -224,6 +225,29 @@ class Backend:
             if item is _END:
                 return
             yield item
+
+    async def send_keys(
+        self,
+        keys: str | list[str],
+        *,
+        literal: bool = True,
+    ) -> None:
+        """Low-level key injection. Available in any state.
+
+        Frontend uses this for TUI navigation after drop_to_tui() and
+        for custom key combinations not covered by higher-level methods.
+
+        Internally dispatches through :mod:`ccmux_core.keys` so the
+        copy-mode-aware path (tmux send-keys vs TIOCSTI) is handled
+        transparently. The blocking subprocess call is offloaded to a
+        thread so the event loop stays responsive.
+        """
+        await asyncio.to_thread(
+            send_keys,
+            self._pane_id,
+            keys,
+            literal=literal,
+        )
 
     # ---- internal tasks ------------------------------------------------
 
