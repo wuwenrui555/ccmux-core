@@ -72,6 +72,18 @@ def cmd_version(args) -> int:
     return 0
 
 
+def cmd_bindings_snapshot(args) -> int:
+    from pathlib import Path
+
+    from .bindings import snapshot
+
+    output = Path(args.output).expanduser() if args.output else None
+    count = snapshot(bindings_path=output)
+    target = output if output is not None else "~/.ccmux-core/bindings.json"
+    print(f"wrote {count} bindings to {target}", file=sys.stderr)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # JSON serializers (used by --json mode)
 # ---------------------------------------------------------------------------
@@ -1275,6 +1287,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_version = sub.add_parser("version", help="Print package version")
     p_version.set_defaults(fn=cmd_version)
+
+    p_bindings = sub.add_parser(
+        "bindings", help="Inspect or rebuild the bindings cache file"
+    )
+    bindings_sub = p_bindings.add_subparsers(dest="bindings_cmd")
+    p_bindings_snapshot = bindings_sub.add_parser(
+        "snapshot",
+        help="One-shot full scan of events.jsonl, rewrite bindings.json",
+    )
+    p_bindings_snapshot.add_argument(
+        "--output",
+        default=None,
+        help="Override the default ~/.ccmux-core/bindings.json path",
+    )
+    p_bindings_snapshot.set_defaults(fn=cmd_bindings_snapshot)
 
     return p
 

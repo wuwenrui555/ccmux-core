@@ -38,6 +38,35 @@ def test_parser_version():
     assert args.cmd == "version"
 
 
+def test_parser_bindings_snapshot_default_output():
+    p = build_parser()
+    args = p.parse_args(["bindings", "snapshot"])
+    assert args.cmd == "bindings"
+    assert args.bindings_cmd == "snapshot"
+    assert args.output is None
+
+
+def test_parser_bindings_snapshot_with_output():
+    p = build_parser()
+    args = p.parse_args(["bindings", "snapshot", "--output", "/tmp/x.json"])
+    assert args.output == "/tmp/x.json"
+
+
+def test_cmd_bindings_snapshot_writes_default_path(tmp_path, monkeypatch):
+    """The default path is derived from CCMUX_CORE_DIR; redirect it for the test."""
+    monkeypatch.setenv("CCMUX_CORE_DIR", str(tmp_path))
+    # Empty events file in claude-tap's location — point at our tmp.
+    events = tmp_path / "events.jsonl"
+    events.write_text("")
+    monkeypatch.setenv("CLAUDE_TAP_DIR", str(tmp_path))
+
+    p = build_parser()
+    args = p.parse_args(["bindings", "snapshot"])
+    rc = args.fn(args)
+    assert rc == 0
+    assert (tmp_path / "bindings.json").exists()
+
+
 def test_bindings_table_empty():
     out = _bindings_table([])
     assert "no live tmux sessions" in out.lower()
