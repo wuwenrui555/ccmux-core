@@ -132,6 +132,11 @@ class Backend:
         self._on_live_task: asyncio.Task | None = None
         self._fallback_task: asyncio.Task | None = None
 
+        # Prompts queued while state is Working / None (pre-live).
+        # Flushed as one concatenated submission on the next Idle
+        # transition. See `send_prompt` / `_flush_pending`.
+        self._pending: list[str] = []
+
     async def __aenter__(self) -> Backend:
         self._subscribe_unix = time.time()
         self._event_task = asyncio.create_task(self._event_consumer())
@@ -249,6 +254,63 @@ class Backend:
             literal=literal,
         )
 
+    @property
+    def pending_count(self) -> int:
+        """Number of prompts queued waiting for next Idle."""
+        return len(self._pending)
+
+    @property
+    def pending_preview(self) -> str:
+        """Concatenated preview of pending prompts (frontend display)."""
+        return "\n\n".join(self._pending)
+
+    async def send_prompt(self, text: str) -> None:
+        """Send a prompt to claude.
+
+        State-dispatched:
+          Idle    → defensive C-u, then send text + Enter
+          Working → append to pending queue; flushed on next Idle
+          Blocked → raise BlockedError
+          Dead    → raise DeadError
+          None    → queue (pre-live-phase)
+        """
+        from .error import BlockedError, DeadError
+        from .state import Blocked, Dead, Idle, Working
+
+        state = self._state
+        if isinstance(state, Idle):
+            await self.send_keys("C-u", literal=False)
+            await self.send_keys(text, literal=True)
+            await self.send_keys("Enter", literal=False)
+        elif isinstance(state, Working):
+            self._pending.append(text)
+        elif isinstance(state, Blocked):
+            raise BlockedError(
+                "Cannot send_prompt while Blocked — respond to the active "
+                f"{state.kind} dialog first."
+            )
+        elif isinstance(state, Dead):
+            raise DeadError(f"Session is Dead ({state.reason}); cannot send_prompt.")
+        else:
+            # state is None (pre-live-phase): queue
+            self._pending.append(text)
+
+    async def _flush_pending(self, *, new_state: State | None) -> None:
+        """Called whenever we emit a new state. If the new state is
+        Idle and the queue is non-empty, send the queued prompts as
+        one concatenated submission (separated by ``"\\n\\n"``)."""
+        from .state import Idle
+
+        if not isinstance(new_state, Idle):
+            return
+        if not self._pending:
+            return
+        combined = "\n\n".join(self._pending)
+        self._pending.clear()
+        await self.send_keys("C-u", literal=False)
+        await self.send_keys(combined, literal=True)
+        await self.send_keys("Enter", literal=False)
+
     # ---- internal tasks ------------------------------------------------
 
     async def _event_consumer(self) -> None:
@@ -284,6 +346,7 @@ class Backend:
                     self._events_q.put_nowait(ev)
                     if step.emit and step.new_state is not None:
                         self._states_q.put_nowait(step.new_state)
+                        await self._flush_pending(new_state=step.new_state)
                     # L1 message fan-out: synthesize UserPrompt /
                     # PermissionRequest from the event stream (see
                     # dedup table in the L2 design spec). Other L1
@@ -321,6 +384,7 @@ class Backend:
             return
         if self._state is not None:
             self._states_q.put_nowait(self._state)
+            await self._flush_pending(new_state=self._state)
         self._live_phase_event.set()
 
     async def _live_fallback_timer(self) -> None:
@@ -462,5 +526,9 @@ class Backend:
         self._state = step.new_state
         if step.emit and step.new_state is not None:
             self._states_q.put_nowait(step.new_state)
+            # Schedule flush — sync context can't await. _flush_pending
+            # is a no-op when new_state isn't Idle or when queue is
+            # empty, so the task is cheap in the common case.
+            asyncio.create_task(self._flush_pending(new_state=step.new_state))
         if isinstance(step.new_state, Dead):
             self._stopped.set()

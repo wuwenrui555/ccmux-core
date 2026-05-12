@@ -682,3 +682,143 @@ async def test_backend_grace_fires_when_pane_static_and_no_spinner(monkeypatch):
         assert any(s == Idle(reason="interrupted") for s in out)
         # And ensure the freeze actually held (the test is meaningful):
         assert mon._last_pane_change_at == frozen_at
+
+
+# ---------------------------------------------------------------------------
+# send_prompt + concat queue tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_prompt_in_idle_sends_immediately(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Idle
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Idle(reason="stop")
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b.send_prompt("hello")
+        # At minimum we expect: text "hello" sent literal, plus "Enter" key
+        all_call_args = [c.args for c in sk.call_args_list]
+        all_kwargs = [c.kwargs for c in sk.call_args_list]
+        text_calls = [
+            a
+            for a, k in zip(all_call_args, all_kwargs, strict=False)
+            if a and a[0] == "hello"
+        ]
+        assert text_calls, f"expected hello in calls; got {all_call_args}"
+        enter_calls = [a for a in all_call_args if a and a[0] == "Enter"]
+        assert enter_calls, f"expected Enter in calls; got {all_call_args}"
+
+
+@pytest.mark.asyncio
+async def test_send_prompt_in_working_queues_without_sending(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Working
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Working(tool_name=None)
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b.send_prompt("A")
+            await b.send_prompt("B")
+        sk.assert_not_called()
+        assert b.pending_count == 2
+        assert "A" in b.pending_preview
+        assert "B" in b.pending_preview
+
+
+@pytest.mark.asyncio
+async def test_send_prompt_in_blocked_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import BlockedError
+    from ccmux_core.state import Blocked
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Blocked(kind="permission", tool_name="Bash", tool_input={})
+        with pytest.raises(BlockedError):
+            await b.send_prompt("x")
+
+
+@pytest.mark.asyncio
+async def test_send_prompt_in_dead_raises(tmp_path):
+    from ccmux_core import Backend
+    from ccmux_core.error import DeadError
+    from ccmux_core.state import Dead
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Dead(reason="session_end")
+        with pytest.raises(DeadError):
+            await b.send_prompt("x")
+
+
+@pytest.mark.asyncio
+async def test_flush_pending_concatenates_with_double_newline(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Idle, Working
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._state = Working(tool_name=None)
+        await b.send_prompt("A")
+        await b.send_prompt("B")
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b._flush_pending(new_state=Idle(reason="stop"))
+        sent_args = [c.args for c in sk.call_args_list]
+        # one of the calls should send "A\n\nB" as literal text
+        text_calls = [a for a in sent_args if a and a[0] == "A\n\nB"]
+        assert text_calls, f"expected 'A\\n\\nB' in calls; got {sent_args}"
+        assert b.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_flush_pending_is_noop_when_queue_empty(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Idle
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b._flush_pending(new_state=Idle(reason="stop"))
+        sk.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flush_pending_is_noop_when_state_not_idle(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    from ccmux_core import Backend
+    from ccmux_core.state import Working
+
+    events_path = tmp_path / "events.jsonl"
+    events_path.touch()
+
+    async with Backend(tmux_session="t1", pane_id="%0", events_path=events_path) as b:
+        b._pending.append("X")
+        with patch.object(b, "send_keys", new_callable=AsyncMock) as sk:
+            await b._flush_pending(new_state=Working(tool_name=None))
+        sk.assert_not_called()
+        assert b.pending_count == 1  # queue preserved
