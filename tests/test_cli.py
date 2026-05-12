@@ -67,6 +67,29 @@ def test_cmd_bindings_snapshot_writes_default_path(tmp_path, monkeypatch):
     assert (tmp_path / "bindings.json").exists()
 
 
+def test_cmd_bindings_snapshot_returns_1_on_unwritable_path(
+    tmp_path, monkeypatch, capsys
+):
+    """Snapshot returning OSError (e.g. unwritable target) exits 1 with a friendly stderr message."""
+    monkeypatch.setenv("CLAUDE_TAP_DIR", str(tmp_path))
+    (tmp_path / "events.jsonl").write_text("")
+    # Point output at a path under a non-existent unwritable directory
+    bad_output = tmp_path / "nonexistent_root" / "subdir" / "bindings.json"
+    # Make the parent unwritable to force OSError on mkdir or write
+    parent = tmp_path / "nonexistent_root"
+    parent.mkdir()
+    parent.chmod(0o500)  # read+execute only, no write
+    try:
+        p = build_parser()
+        args = p.parse_args(["bindings", "snapshot", "--output", str(bad_output)])
+        rc = args.fn(args)
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "ccmux-core bindings snapshot:" in captured.err
+    finally:
+        parent.chmod(0o700)  # restore so tmp_path cleanup works
+
+
 def test_bindings_table_empty():
     out = _bindings_table([])
     assert "no live tmux sessions" in out.lower()

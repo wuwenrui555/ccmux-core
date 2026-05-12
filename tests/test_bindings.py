@@ -463,6 +463,26 @@ async def test_tracker_seeks_to_eof_on_start(tmp_path):
     assert "ccmux" not in data, "pre-existing event must be skipped (seek to EOF)"
 
 
+@pytest.mark.asyncio
+async def test_tracker_raises_on_corrupted_bindings_json(tmp_path):
+    """BindingsTracker.__aenter__ must NOT silently fall back when bindings.json is malformed."""
+    from ccmux_core.bindings import BindingsTracker
+
+    events = tmp_path / "events.jsonl"
+    events.write_text("")
+    bindings_path = tmp_path / "bindings.json"
+    bindings_path.write_text("{ not valid json")
+    lock_path = tmp_path / "bindings.lock"
+
+    with pytest.raises(json.JSONDecodeError):
+        async with BindingsTracker(
+            events_path=events,
+            bindings_path=bindings_path,
+            lock_path=lock_path,
+        ):
+            pass
+
+
 def test_snapshot_writes_current_bindings(tmp_path):
     from ccmux_core.bindings import load_bindings, snapshot
 
