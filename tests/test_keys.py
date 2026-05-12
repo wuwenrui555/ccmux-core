@@ -131,3 +131,70 @@ def test_send_via_tiocsti_closes_fd_on_ioctl_failure():
         with pytest.raises(KeyInjectionError):
             send_via_tiocsti(pane_id="%0", keys="hi", literal=True)
         op_close.assert_called_once_with(42)
+
+
+def test_pane_in_copy_mode_true():
+    from unittest.mock import patch
+
+    from ccmux_core.keys import pane_in_copy_mode
+
+    with patch("subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = "1\n"
+        assert pane_in_copy_mode("%0") is True
+
+
+def test_pane_in_copy_mode_false():
+    from unittest.mock import patch
+
+    from ccmux_core.keys import pane_in_copy_mode
+
+    with patch("subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = "0\n"
+        assert pane_in_copy_mode("%0") is False
+
+
+def test_pane_in_copy_mode_falls_back_to_false_on_tmux_error():
+    """If detection itself fails, assume normal mode."""
+    from unittest.mock import patch
+
+    from ccmux_core.keys import pane_in_copy_mode
+
+    with patch("subprocess.run") as run:
+        run.return_value.returncode = 1
+        run.return_value.stdout = ""
+        run.return_value.stderr = "can't find pane"
+        assert pane_in_copy_mode("%0") is False
+
+
+def test_send_keys_dispatches_to_tmux_when_normal_mode():
+    from unittest.mock import patch
+
+    from ccmux_core.keys import send_keys
+
+    with (
+        patch("ccmux_core.keys.pane_in_copy_mode", return_value=False),
+        patch("ccmux_core.keys.send_via_tmux") as via_tmux,
+        patch("ccmux_core.keys.send_via_tiocsti") as via_tiocsti,
+    ):
+        send_keys(pane_id="%0", keys="hi", literal=True)
+
+    via_tmux.assert_called_once_with("%0", "hi", literal=True)
+    via_tiocsti.assert_not_called()
+
+
+def test_send_keys_dispatches_to_tiocsti_when_copy_mode():
+    from unittest.mock import patch
+
+    from ccmux_core.keys import send_keys
+
+    with (
+        patch("ccmux_core.keys.pane_in_copy_mode", return_value=True),
+        patch("ccmux_core.keys.send_via_tmux") as via_tmux,
+        patch("ccmux_core.keys.send_via_tiocsti") as via_tiocsti,
+    ):
+        send_keys(pane_id="%0", keys="hi", literal=True)
+
+    via_tmux.assert_not_called()
+    via_tiocsti.assert_called_once_with("%0", "hi", literal=True)

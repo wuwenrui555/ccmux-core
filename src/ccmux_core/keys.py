@@ -129,3 +129,39 @@ def send_via_tiocsti(
         raise KeyInjectionError(f"TIOCSTI ioctl failed on {tty}: {e}") from e
     finally:
         os.close(fd)
+
+
+def pane_in_copy_mode(pane_id: str) -> bool:
+    """True if the tmux pane is currently in copy mode.
+
+    Detected via tmux's ``#{?pane_in_mode,1,0}`` format spec. If
+    the detection call itself fails, returns False (assume normal
+    mode and let send_via_tmux surface any downstream error)."""
+    result = subprocess.run(
+        ["tmux", "display", "-t", pane_id, "-p", "#{?pane_in_mode,1,0}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    return result.stdout.strip() == "1"
+
+
+def send_keys(
+    pane_id: str,
+    keys: str | list[str],
+    *,
+    literal: bool,
+) -> None:
+    """Send keys to a pane, transparently handling copy mode.
+
+    When the pane is in copy mode, ``tmux send-keys`` would be
+    intercepted by copy-mode commands. Falls back to TIOCSTI to
+    bypass tmux entirely so the user's copy-mode session stays
+    intact.
+    """
+    if pane_in_copy_mode(pane_id):
+        send_via_tiocsti(pane_id, keys, literal=literal)
+    else:
+        send_via_tmux(pane_id, keys, literal=literal)
