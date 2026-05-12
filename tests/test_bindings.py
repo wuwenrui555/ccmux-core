@@ -383,3 +383,19 @@ def test_atomic_write_is_serialized_under_contention(tmp_path):
     # (whichever writer happened to be last).
     parsed = json.loads(path.read_text())
     assert parsed in (big_a, big_b)
+
+
+def test_load_bindings_missing_file_returns_empty(tmp_path):
+    from ccmux_core.bindings import load_bindings
+
+    path = tmp_path / "bindings.json"
+    assert load_bindings(path) == {}
+
+
+def test_load_bindings_reads_well_formed_file(tmp_path):
+    from ccmux_core.bindings import load_bindings
+
+    path = tmp_path / "bindings.json"
+    payload = {"ccmux": {"pane_id": "%1", "current_session_id": "abc"}}
+    path.write_text(json.dumps(payload))
+    assert load_bindings(path) == payload

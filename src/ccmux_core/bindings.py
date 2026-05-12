@@ -278,3 +278,14 @@ def _atomic_write(
             os.replace(tmp, path)
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+
+def load_bindings(path: Path) -> dict[str, dict]:
+    """Read the bindings JSON file from disk. Returns ``{}`` if missing.
+
+    Readers do not need to take ``flock`` because writers use
+    ``os.replace`` for atomic visibility.
+    """
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
