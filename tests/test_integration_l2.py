@@ -123,15 +123,15 @@ async def test_lifecycle_session_start_prompt_stop(tmp_path, monkeypatch):
                 timeout=5.0,
             )
 
-            assert any(
-                isinstance(s, Idle) and s.reason == "start" for s in states
-            ), f"missing Idle(start) in {states}"
-            assert any(
-                isinstance(s, Working) for s in states
-            ), f"missing Working in {states}"
-            assert states[-1] == Idle(
-                reason="stop"
-            ), f"expected end at Idle(stop), got {states[-1]}"
+            assert any(isinstance(s, Idle) and s.reason == "start" for s in states), (
+                f"missing Idle(start) in {states}"
+            )
+            assert any(isinstance(s, Working) for s in states), (
+                f"missing Working in {states}"
+            )
+            assert states[-1] == Idle(reason="stop"), (
+                f"expected end at Idle(stop), got {states[-1]}"
+            )
 
             user_prompts = [m for m in msgs if isinstance(m, UserPrompt)]
             assert len(user_prompts) == 1

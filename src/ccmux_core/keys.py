@@ -51,7 +51,7 @@ def send_via_tmux(
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise KeyInjectionError(
-            f"tmux send-keys failed for pane {pane_id!r}: " f"{result.stderr.strip()}"
+            f"tmux send-keys failed for pane {pane_id!r}: {result.stderr.strip()}"
         )
 
 
@@ -84,8 +84,7 @@ def _get_pane_tty(pane_id: str) -> str:
     )
     if result.returncode != 0:
         raise KeyInjectionError(
-            f"tmux display(pane_tty) failed for {pane_id!r}: "
-            f"{result.stderr.strip()}"
+            f"tmux display(pane_tty) failed for {pane_id!r}: {result.stderr.strip()}"
         )
     tty = result.stdout.strip()
     if not tty:
