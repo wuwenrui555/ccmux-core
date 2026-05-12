@@ -441,45 +441,74 @@ def _render_status_lines(
     latest_spinner_activity,
     use_color: bool,
     width: int,
+    tmux_session: str = "",
+    window_id: str | None = None,
+    primary_sid: str | None = None,
 ) -> list[str]:
     """Render status bar content as a list of lines (no leading separator).
 
     Layout::
 
-        state=<STATE_SUMMARY>  hook=<event_type>(<tool>) <age>
+        (blank)
+        state=<STATE_SUMMARY>
+        (blank)
+        [ HH:MM:SS tmux@win sid · STATE ] EVENT · <event_type>
+        <event body>
+        (blank)
         spinner=<line1>
                 <line2>  (if multi-line)
-                <line3>  (etc.)
         <todo line 1, verbatim from spinner.todos>
         <todo line 2, verbatim from spinner.todos>
 
     Returns one line per row, NOT including the top separator. Each
     line is plain text trimmed to ``width`` visual columns.
     """
-    # --- state cell ---
+    out: list[str] = []
+
+    # --- blank --
+    out.append("")
+
+    # --- state line ---
     if state is None:
-        state_cell = "state=(waiting)"
+        state_line = "state=(waiting)"
     else:
         summary = _state_summary(state)
         if use_color:
             color = _color_for_state(state)
             summary = _paint(summary, color, enabled=True)
-        state_cell = f"state={summary}"
+        state_line = f"state={summary}"
+    out.append(state_line)
 
-    # --- hook cell ---
+    # --- blank ---
+    out.append("")
+
+    # --- hook event block (2 lines: header + body) ---
     if latest_hook_event is None:
-        hook_cell = "hook=(none)"
+        out.append("(no hook events yet)")
+        out.append("")  # body placeholder
     else:
-        et = latest_hook_event.get("event_type", "?")
-        payload = latest_hook_event.get("payload") or {}
-        tool = payload.get("tool_name")
-        head = f"{et}({tool})" if tool else et
+        ev_ts = _ts_short(latest_hook_event.get("timestamp"))
+        hook_header = _header(
+            ts=ev_ts,
+            tmux_session=tmux_session,
+            window_id=window_id,
+            primary_sid=primary_sid,
+            label=_event_label(latest_hook_event),
+            state=state,
+            use_color=use_color,
+        )
+        hook_body = _event_body(latest_hook_event)
+        # Append the age suffix to the body so the user can still see
+        # how long ago the hook fired (the header has the event's own
+        # timestamp; age gives quick relative reference).
         age = _hook_age_seconds(latest_hook_event.get("timestamp"))
-        hook_cell = f"hook={head}" + (f" {age}s ago" if age is not None else "")
+        if age is not None:
+            hook_body = f"{hook_body}  ({age}s ago)" if hook_body else f"({age}s ago)"
+        out.append(hook_header)
+        out.append(hook_body)
 
-    head_line = f"{state_cell}  {hook_cell}"
-
-    out: list[str] = [head_line]
+    # --- blank ---
+    out.append("")
 
     # --- spinner block ---
     if latest_spinner_activity is None:
@@ -529,19 +558,23 @@ def _emit_status(ctx: dict) -> None:
         latest_spinner_activity=ctx["latest_spinner_activity"],
         use_color=ctx["color_enabled"],
         width=cols,
+        tmux_session=ctx["tmux_session"],
+        window_id=ctx["window_id"],
+        primary_sid=ctx["primary_sid"],
     )
     sep = _status_separator(
         cols,
         state=ctx["current_state"],
         use_color=ctx["color_enabled"],
     )
-    # Status bar shape: separator · blank · content · blank.
+    # Status bar shape: separator · content · blank.
+    # _render_status_lines already starts with its own blank, so we
+    # don't add one between separator and content here.
     # The blank ABOVE the separator comes naturally from each log
     # block's trailing print() in the scroll region — we don't add
-    # our own leading blank or we'd get 2-vs-1 asymmetry. The blank
-    # between separator and content is part of the bar; ditto the
-    # trailing blank.
-    full = [sep, "", *lines, ""]
+    # one or we'd get 2-vs-1 asymmetry. The trailing blank below is
+    # appended explicitly here.
+    full = [sep, *lines, ""]
     new_height = len(full)
     old_height = ctx["status_height"]
 
