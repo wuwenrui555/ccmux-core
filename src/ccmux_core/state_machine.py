@@ -23,7 +23,9 @@ from typing import Literal
 
 from .state import Blocked, Dead, Idle, State, Working
 
-# Tools whose pre_tool_use enters Blocked rather than Working.
+# Tools whose tool_name → Blocked.kind mapping is non-default.
+# Used by both pre_tool_use (to enter Blocked instead of Working)
+# and permission_request (to pick the right Blocked.kind).
 _BLOCKING_TOOLS: dict[str, Literal["ask_user", "exit_plan_mode"]] = {
     "AskUserQuestion": "ask_user",
     "ExitPlanMode": "exit_plan_mode",
@@ -159,10 +161,15 @@ def apply(
         else:
             new_state = Working(tool_name=tool or None)
     elif et == "permission_request":
+        tool = payload.get("tool_name", "") or ""
+        kind: Literal["permission", "ask_user", "exit_plan_mode"] = _BLOCKING_TOOLS.get(
+            tool, "permission"
+        )
         new_state = Blocked(
-            kind="permission",
-            tool_name=payload.get("tool_name", "") or "",
+            kind=kind,
+            tool_name=tool,
             tool_input=payload.get("tool_input"),
+            request_id=payload.get("request_id") or None,
         )
     elif et == "post_tool_use":
         new_state = Working(tool_name=None)

@@ -409,7 +409,7 @@ async def _watch_async(session: str, pretty: bool) -> int:
                     )
 
         async def pump_messages():
-            async for msg in b.messages():
+            async for msg in b.transcript_items():
                 if pretty:
                     _emit_pretty(
                         _message_label(msg),

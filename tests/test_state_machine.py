@@ -313,3 +313,73 @@ def test_safety_net_on_dead_is_noop():
     step = apply_safety_net(state=Dead(reason="session_end"), trigger="pane_lost")
     assert step.new_state == Dead(reason="session_end")
     assert step.emit is False
+
+
+def test_permission_request_carries_request_id():
+    """When permission_request payload has request_id, it propagates to Blocked."""
+    from ccmux_core.state import Blocked
+    from ccmux_core.state_machine import apply
+
+    event = {
+        "event_type": "permission_request",
+        "claude": {"session_id": "s1"},
+        "payload": {
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            "request_id": "r-abc123",
+        },
+    }
+    step = apply(
+        state=None,
+        primary="s1",
+        known_session_ids=frozenset({"s1"}),
+        event=event,
+    )
+    assert isinstance(step.new_state, Blocked)
+    assert step.new_state.request_id == "r-abc123"
+
+
+def test_permission_request_for_ask_user_routes_to_ask_user_kind():
+    from ccmux_core.state import Blocked
+    from ccmux_core.state_machine import apply
+
+    event = {
+        "event_type": "permission_request",
+        "claude": {"session_id": "s1"},
+        "payload": {
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": []},
+            "request_id": "r-1",
+        },
+    }
+    step = apply(
+        state=None,
+        primary="s1",
+        known_session_ids=frozenset({"s1"}),
+        event=event,
+    )
+    assert isinstance(step.new_state, Blocked)
+    assert step.new_state.kind == "ask_user"
+
+
+def test_permission_request_for_exit_plan_mode_routes_to_exit_plan_mode_kind():
+    from ccmux_core.state import Blocked
+    from ccmux_core.state_machine import apply
+
+    event = {
+        "event_type": "permission_request",
+        "claude": {"session_id": "s1"},
+        "payload": {
+            "tool_name": "ExitPlanMode",
+            "tool_input": {"plan": "..."},
+            "request_id": "r-1",
+        },
+    }
+    step = apply(
+        state=None,
+        primary="s1",
+        known_session_ids=frozenset({"s1"}),
+        event=event,
+    )
+    assert isinstance(step.new_state, Blocked)
+    assert step.new_state.kind == "exit_plan_mode"

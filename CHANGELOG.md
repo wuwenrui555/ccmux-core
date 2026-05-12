@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-05-12
+
+Breaking change: from a four-stream observation library to a
+three-layer model with state-gated operations.
+
+### Added
+
+- L1 normalized `messages()` stream — deduplicated fusion of hook
+  events and transcript items into a `Message` union
+  (`UserPrompt | AssistantText | ToolCall | ToolResult |
+  PermissionRequest`). Note: transcript-side emissions
+  (`AssistantText`, `ToolCall`, `ToolResult`) are deferred — see
+  the follow-up tracked in the plan doc. Event-side emissions
+  (`UserPrompt`, `PermissionRequest`) ship in v0.2.0.
+- L2 state-gated operations:
+  - `send_prompt(text)` — Idle: send immediately;
+    Working: append to concat queue (flushed on next Idle);
+    Blocked/Dead: raise.
+  - `interrupt()` — Esc + Ctrl-U + clear pending.
+  - `respond_permission(decision, mode, message)`.
+  - `respond_exit_plan(mode, feedback)`.
+  - `respond_question(selections)`.
+  - `drop_to_tui()` — release socket, fall through to TUI.
+  - `send_keys(keys, literal)` — copy-mode aware (tmux send-keys
+    default, TIOCSTI fallback when pane is in copy mode).
+- `Blocked` now carries `request_id` and `expired` fields.
+- New error types: `BlockedError`, `DeadError`, `WrongStateError`,
+  `WrongBlockedKindError`, `BlockedExpiredError`.
+- `decision.sock` listener bound automatically per Backend.
+
+### Changed (breaking)
+
+- L0 `messages()` renamed to `transcript_items()` so the L1 name
+  is free for the new normalized stream.
+- `Blocked.kind` discrimination moved from `pre_tool_use` to
+  `permission_request` events; `AskUserQuestion` and `ExitPlanMode`
+  fire through the permission hook (consistent with claude code's
+  actual behavior, validated against cmux's production logic).
+
+### Notes
+
+- Single-Backend scope. `MultiBackend` orchestration and
+  multi-process `decision.sock` arbitration are deferred to a
+  follow-up spec.
+- ccmux-spinner 0.2.2 is recommended (pinned capture-pane).
+
 ## [0.1.0] - 2026-05-11
 
 ### Added
