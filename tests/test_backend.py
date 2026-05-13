@@ -685,6 +685,165 @@ async def test_backend_grace_fires_when_pane_static_and_no_spinner(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Dead transition: consumer iterator termination (issue #13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_states_iterator_self_terminates_on_dead(monkeypatch):
+    """states() returns after yielding Dead without needing _END.
+
+    Contract test for the invariant the #13 fix relies on:
+    _states_q is excluded from _terminate_consumer_iters precisely
+    because states() ends itself after a Dead yield. If this
+    invariant ever breaks, the fix's queue scope needs revisiting.
+    """
+    import ccmux_core.backend as bk
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", sid="S1", ts=later_ts),
+        _ev("session_end", sid="S1", payload={"reason": "other"}, ts=later_ts),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    out: list = []
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+
+        async def consume():
+            async for s in b.states():
+                out.append(s)
+
+        await asyncio.wait_for(consume(), timeout=1.0)
+
+    assert any(isinstance(s, Dead) and s.reason == "session_end" for s in out)
+    # Critically: consume() returned without TimeoutError, i.e.
+    # states() ended itself after yielding Dead — no _END needed.
+
+
+@pytest.mark.asyncio
+async def test_messages_consumer_finally_runs_after_dead(monkeypatch):
+    """cct-style regression: async-for over messages() must wind
+    down on Dead so consumer's finally: runs.
+
+    Reproduces the 2026-05-12 cct v0.1.0 incident (issue #13): a
+    consumer doing `async for msg in b.messages()` with a `finally:`
+    block to send a 🪦 death notification never reached that block
+    because messages() hung after Dead.
+    """
+    import contextlib
+
+    import ccmux_core.backend as bk
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", sid="S1", ts=later_ts),
+        _ev("session_end", sid="S1", payload={"reason": "other"}, ts=later_ts),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    completed = asyncio.Event()
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+
+        async def consume():
+            try:
+                async for _msg in b.messages():
+                    pass
+            finally:
+                completed.set()
+
+        task = asyncio.create_task(consume())
+        try:
+            await asyncio.wait_for(completed.wait(), timeout=1.0)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert completed.is_set(), (
+        "messages() consumer never reached finally: after Dead — "
+        "iterator hung waiting on _l1_messages_q (issue #13)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_event_dead_terminates_all_iterators(monkeypatch):
+    """When _event_consumer observes a fatal session_end and
+    transitions to Dead, all four non-self-terminating iterators
+    (events / messages / transcript_items / spinners) must return
+    cleanly so 'async with Backend(...)' can reach __aexit__.
+    """
+    import ccmux_core.backend as bk
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", sid="S1", ts=later_ts),
+        _ev("session_end", sid="S1", payload={"reason": "other"}, ts=later_ts),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+
+        async def drain(iterator_factory):
+            async for _ in iterator_factory():
+                pass
+
+        tasks = [
+            asyncio.create_task(drain(b.events)),
+            asyncio.create_task(drain(b.messages)),
+            asyncio.create_task(drain(b.transcript_items)),
+            asyncio.create_task(drain(b.spinners)),
+        ]
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1.0)
+
+    # If we got here without TimeoutError, every iterator returned
+    # on its own — i.e., _terminate_consumer_iters successfully
+    # released them when Dead was reached.
+
+
+@pytest.mark.asyncio
+async def test_safety_net_dead_terminates_all_iterators(monkeypatch):
+    """When _trigger_safety fires (process_gone here, but same path
+    for pane_lost / spinner_grace) and transitions to Dead, all
+    four non-self-terminating iterators must return cleanly.
+
+    Mirrors the _event_consumer test but exercises the
+    _trigger_safety call site.
+    """
+    import ccmux_core.backend as bk
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [_ev("session_start", ts=later_ts)]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    class _NoClaude:
+        returncode = 0
+        stdout = "bash\nzsh\n"
+        stderr = ""
+
+    monkeypatch.setattr(bk.subprocess, "run", lambda *a, **kw: _NoClaude())
+
+    async with Backend(
+        tmux_session="ccmux",
+        pane_id="%1",
+        process_probe_startup_grace=0.05,
+        process_probe_interval=0.05,
+    ) as b:
+
+        async def drain(iterator_factory):
+            async for _ in iterator_factory():
+                pass
+
+        tasks = [
+            asyncio.create_task(drain(b.events)),
+            asyncio.create_task(drain(b.messages)),
+            asyncio.create_task(drain(b.transcript_items)),
+            asyncio.create_task(drain(b.spinners)),
+        ]
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
 # send_prompt + concat queue tests
 # ---------------------------------------------------------------------------
 

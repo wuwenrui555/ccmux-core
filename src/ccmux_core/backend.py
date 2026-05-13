@@ -619,6 +619,28 @@ class Backend:
         except Exception:
             pass
 
+    def _terminate_consumer_iters(self) -> None:
+        """Push _END into the four non-self-terminating consumer queues.
+
+        Called when the Backend transitions to Dead, to release any
+        consumer awaiting on messages() / events() / transcript_items()
+        / spinners() so their async-for loops can wind down and
+        'async with Backend(...)' can reach __aexit__.
+
+        _states_q is excluded: states() returns immediately after
+        yielding a Dead state, so its queue doesn't need a sentinel
+        push to terminate.
+
+        Safe to call multiple times. __aexit__ also pushes _END to
+        every queue; a second _END sitting unread in a queue is
+        harmless (the consumer has already returned on the first one,
+        and asyncio.Queue is unbounded by default).
+        """
+        self._events_q.put_nowait(_END)
+        self._messages_q.put_nowait(_END)
+        self._spinners_q.put_nowait(_END)
+        self._l1_messages_q.put_nowait(_END)
+
     async def _event_consumer(self) -> None:
         try:
             stream = EventStream(
@@ -715,6 +737,7 @@ class Backend:
                         )
                     if isinstance(step.new_state, Dead):
                         self._stopped.set()
+                        self._terminate_consumer_iters()
                         return
                 # Silence the unused-variable warning:
                 _ = tmux
@@ -895,3 +918,4 @@ class Backend:
             await self._flush_pending(new_state=step.new_state)
         if isinstance(step.new_state, Dead):
             self._stopped.set()
+            self._terminate_consumer_iters()
