@@ -130,12 +130,14 @@ def send_via_tiocsti(
         os.close(fd)
 
 
-def pane_in_copy_mode(pane_id: str) -> bool:
-    """True if the tmux pane is currently in copy mode.
+def pane_in_mode(pane_id: str) -> bool:
+    """True if the tmux pane is in any mode (copy / view / choose /
+    clock).
 
-    Detected via tmux's ``#{?pane_in_mode,1,0}`` format spec. If
-    the detection call itself fails, returns False (assume normal
-    mode and let send_via_tmux surface any downstream error)."""
+    Detected via tmux's ``#{?pane_in_mode,1,0}`` format spec, which
+    returns 1 for any active pane mode (not just copy mode). If the
+    detection call itself fails, returns False (assume normal mode
+    and let send_via_tmux surface any downstream error)."""
     result = subprocess.run(
         ["tmux", "display", "-t", pane_id, "-p", "#{?pane_in_mode,1,0}"],
         capture_output=True,
@@ -160,7 +162,7 @@ def send_keys(
     bypass tmux entirely so the user's copy-mode session stays
     intact.
     """
-    if pane_in_copy_mode(pane_id):
+    if pane_in_mode(pane_id):
         send_via_tiocsti(pane_id, keys, literal=literal)
     else:
         send_via_tmux(pane_id, keys, literal=literal)
