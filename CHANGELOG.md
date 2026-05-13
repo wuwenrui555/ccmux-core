@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-12
+
+### Fixed
+
+- `Backend` now releases all consumer iterators (`events()`,
+  `messages()`, `transcript_items()`, `spinners()`) when the
+  session transitions to `Dead`, so `async for` loops wind down
+  and consumer `finally:` blocks run. Both Dead paths covered:
+  fatal `session_end` (via `_event_consumer`) and the safety nets
+  `process_gone` / `pane_lost` / `spinner_grace` (via
+  `_trigger_safety`). Closes [#13]. `states()` already
+  self-terminates after yielding `Dead` and is unchanged.
+- `ccmux-core version` (and `ccmux_core.__version__`) now reports
+  the actual installed version. The v0.3.0 release forgot to bump
+  `_version.py`, leaving the runtime reporting "0.2.0"; this
+  release reconciles `_version.py` to `0.3.1` alongside the
+  `pyproject.toml` bump.
+
+[#13]: https://github.com/wuwenrui555/ccmux-core/issues/13
+
 ## [0.3.0] - 2026-05-12
 
 ### Added — bindings tracker
