@@ -155,14 +155,21 @@ def send_keys(
     *,
     literal: bool,
 ) -> None:
-    """Send keys to a pane, transparently handling copy mode.
+    """Send keys to a pane, handling tmux mode interception.
 
-    When the pane is in copy mode, ``tmux send-keys`` would be
-    intercepted by copy-mode commands. Falls back to TIOCSTI to
-    bypass tmux entirely so the user's copy-mode session stays
-    intact.
+    When the pane is in any tmux mode (copy / view / choose /
+    clock), ``tmux send-keys`` is interpreted as a mode command
+    instead of reaching the shell. Cancel the mode first
+    (``tmux send-keys -X cancel`` is a no-op outside any mode),
+    then send the keys normally.
+
+    Trade-off: when the pane is in copy mode the user's selection
+    buffer is lost. Better than the prompt being silently
+    swallowed.
     """
     if pane_in_mode(pane_id):
-        send_via_tiocsti(pane_id, keys, literal=literal)
-    else:
-        send_via_tmux(pane_id, keys, literal=literal)
+        subprocess.run(
+            ["tmux", "send-keys", "-X", "-t", pane_id, "cancel"],
+            check=False,
+        )
+    send_via_tmux(pane_id, keys, literal=literal)
