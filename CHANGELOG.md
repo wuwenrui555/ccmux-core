@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-05-13
+
+### Fixed
+
+- `send_keys` no longer silently drops the prompt when the target
+  tmux pane is in copy mode. The previous implementation fell
+  back to `ioctl(TIOCSTI, ...)`, which the Linux kernel rejects
+  by default for any tty that is not the calling process's
+  controlling terminal. In real `ccmux-core` deployments the
+  bridge process and the target pane live in different
+  terminals, so the fallback always failed with `EPERM` and
+  `KeyInjectionError` propagated up to the caller. Now `send_keys`
+  runs `tmux send-keys -X cancel` to exit any active mode (copy /
+  view / choose / clock) and then sends keys normally. Trade-off:
+  in-mode invocations lose the user's copy-mode selection buffer,
+  but the prompt actually gets delivered. Closes [#14].
+- The `KeyInjectionError` noise observed in `ccmux-core-telegram`
+  logs from the `_grace_timer` → `_trigger_safety` →
+  `_flush_pending` path resolves as a side effect of the same
+  fix, since every key-injection call flows through `send_keys`.
+
+### Removed
+
+- `send_via_tiocsti`, `_get_pane_tty`, `_encode_keys`, and the
+  `KEYNAME_TO_BYTES` constant. The TIOCSTI code path was
+  unreachable in real deployments (see Fixed above) and was
+  masked by unit tests that mocked `os.open` and `fcntl.ioctl`.
+
+### Changed
+
+- `pane_in_copy_mode` renamed to `pane_in_mode`. The function
+  probes `#{?pane_in_mode,1,0}` which is true for any tmux mode
+  (copy / view / choose / clock), not just copy mode. No
+  behavior change. Not backwards-compatible, but `ccmux-core`
+  is in 0.x with no public-API stability promise.
+
+[#14]: https://github.com/wuwenrui555/ccmux-core/issues/14
+
 ## [0.3.1] - 2026-05-12
 
 ### Fixed
