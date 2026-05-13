@@ -1,7 +1,7 @@
 def test_import_package():
     import ccmux_core
 
-    assert ccmux_core.__version__ == "0.3.1"
+    assert ccmux_core.__version__ == "0.3.2"
 
 
 def test_errors_importable():
