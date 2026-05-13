@@ -685,6 +685,43 @@ async def test_backend_grace_fires_when_pane_static_and_no_spinner(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Dead transition: consumer iterator termination (issue #13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_states_iterator_self_terminates_on_dead(monkeypatch):
+    """states() returns after yielding Dead without needing _END.
+
+    Contract test for the invariant the #13 fix relies on:
+    _states_q is excluded from _terminate_consumer_iters precisely
+    because states() ends itself after a Dead yield. If this
+    invariant ever breaks, the fix's queue scope needs revisiting.
+    """
+    import ccmux_core.backend as bk
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [
+        _ev("session_start", sid="S1", ts=later_ts),
+        _ev("session_end", sid="S1", payload={"reason": "other"}, ts=later_ts),
+    ]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    out: list = []
+    async with Backend(tmux_session="ccmux", pane_id="%1") as b:
+
+        async def consume():
+            async for s in b.states():
+                out.append(s)
+
+        await asyncio.wait_for(consume(), timeout=1.0)
+
+    assert any(isinstance(s, Dead) and s.reason == "session_end" for s in out)
+    # Critically: consume() returned without TimeoutError, i.e.
+    # states() ended itself after yielding Dead — no _END needed.
+
+
+# ---------------------------------------------------------------------------
 # send_prompt + concat queue tests
 # ---------------------------------------------------------------------------
 
