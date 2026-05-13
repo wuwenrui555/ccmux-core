@@ -918,3 +918,4 @@ class Backend:
             await self._flush_pending(new_state=step.new_state)
         if isinstance(step.new_state, Dead):
             self._stopped.set()
+            self._terminate_consumer_iters()

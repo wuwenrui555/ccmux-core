@@ -801,6 +801,48 @@ async def test_event_dead_terminates_all_iterators(monkeypatch):
     # released them when Dead was reached.
 
 
+@pytest.mark.asyncio
+async def test_safety_net_dead_terminates_all_iterators(monkeypatch):
+    """When _trigger_safety fires (process_gone here, but same path
+    for pane_lost / spinner_grace) and transitions to Dead, all
+    four non-self-terminating iterators must return cleanly.
+
+    Mirrors the _event_consumer test but exercises the
+    _trigger_safety call site.
+    """
+    import ccmux_core.backend as bk
+
+    later_ts = "2099-12-31T23:59:59+00:00"
+    events = [_ev("session_start", ts=later_ts)]
+    monkeypatch.setattr(bk, "EventStream", lambda **kw: _FakeEventStream(events))
+
+    class _NoClaude:
+        returncode = 0
+        stdout = "bash\nzsh\n"
+        stderr = ""
+
+    monkeypatch.setattr(bk.subprocess, "run", lambda *a, **kw: _NoClaude())
+
+    async with Backend(
+        tmux_session="ccmux",
+        pane_id="%1",
+        process_probe_startup_grace=0.05,
+        process_probe_interval=0.05,
+    ) as b:
+
+        async def drain(iterator_factory):
+            async for _ in iterator_factory():
+                pass
+
+        tasks = [
+            asyncio.create_task(drain(b.events)),
+            asyncio.create_task(drain(b.messages)),
+            asyncio.create_task(drain(b.transcript_items)),
+            asyncio.create_task(drain(b.spinners)),
+        ]
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=2.0)
+
+
 # ---------------------------------------------------------------------------
 # send_prompt + concat queue tests
 # ---------------------------------------------------------------------------
