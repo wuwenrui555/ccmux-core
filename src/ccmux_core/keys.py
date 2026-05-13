@@ -1,25 +1,30 @@
-"""Key injection: tmux send-keys (default) and TIOCSTI (copy-mode fallback).
+"""Key injection: ``tmux send-keys`` with mode-cancel preamble.
 
-Two paths share one logical input (pane_id + keys + literal flag):
+When a tmux pane is in any of its modes (copy / view / choose /
+clock), ``tmux send-keys`` is interpreted as a mode command
+instead of reaching the shell. :func:`send_keys` probes for that
+state via :func:`pane_in_mode` and runs ``tmux send-keys -X
+cancel`` to exit the mode before injecting keys.
 
-* :func:`send_via_tmux` — uses ``tmux send-keys``. Stable, but is
-  intercepted when the pane is in copy mode.
-
-Task 8 adds the TIOCSTI fallback for copy-mode-aware injection.
+Earlier versions of this module also exposed a :func:`send_via_tiocsti`
+fallback intended to bypass tmux entirely via the ``ioctl(TIOCSTI)``
+syscall. That path was removed in v0.3.2: the Linux kernel rejects
+``TIOCSTI`` to any tty that is not the calling process's controlling
+terminal (or unless the caller has ``CAP_SYS_ADMIN``), so the
+fallback never worked in real ccmux-core deployments where the
+bridge process and the target pane live in different terminals.
+See issue #14.
 """
 
 from __future__ import annotations
 
-import fcntl
-import os
 import subprocess
-import termios
 
 from .error import BackendError
 
 
 class KeyInjectionError(BackendError):
-    """tmux send-keys or TIOCSTI call failed."""
+    """``tmux send-keys`` invocation failed."""
 
 
 def send_via_tmux(
@@ -53,81 +58,6 @@ def send_via_tmux(
         raise KeyInjectionError(
             f"tmux send-keys failed for pane {pane_id!r}: {result.stderr.strip()}"
         )
-
-
-# Fixed map: tmux key name → raw bytes for TIOCSTI injection.
-# Only the keys ccmux-core emits are included.
-KEYNAME_TO_BYTES: dict[str, bytes] = {
-    "Enter": b"\r",
-    "Return": b"\r",
-    "Escape": b"\x1b",
-    "Esc": b"\x1b",
-    "Tab": b"\t",
-    "Space": b" ",
-    "C-a": b"\x01",
-    "C-k": b"\x0b",
-    "C-u": b"\x15",
-    "Up": b"\x1b[A",
-    "Down": b"\x1b[B",
-    "Right": b"\x1b[C",
-    "Left": b"\x1b[D",
-}
-
-
-def _get_pane_tty(pane_id: str) -> str:
-    """Look up the pty path for a tmux pane (e.g. '/dev/pts/42')."""
-    result = subprocess.run(
-        ["tmux", "display", "-t", pane_id, "-p", "#{pane_tty}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise KeyInjectionError(
-            f"tmux display(pane_tty) failed for {pane_id!r}: {result.stderr.strip()}"
-        )
-    tty = result.stdout.strip()
-    if not tty:
-        raise KeyInjectionError(f"pane {pane_id!r} has no pane_tty")
-    return tty
-
-
-def _encode_keys(keys: list[str], literal: bool) -> bytes:
-    """Convert key names / literal text to raw bytes for TIOCSTI."""
-    out = b""
-    for key in keys:
-        if literal:
-            out += key.encode("utf-8")
-        else:
-            if key not in KEYNAME_TO_BYTES:
-                raise KeyInjectionError(f"unknown key name: {key!r}")
-            out += KEYNAME_TO_BYTES[key]
-    return out
-
-
-def send_via_tiocsti(
-    pane_id: str,
-    keys: str | list[str],
-    *,
-    literal: bool,
-) -> None:
-    """Inject keys into a pane's pty via TIOCSTI, bypassing tmux.
-
-    Works regardless of copy mode. Each byte is injected with a
-    separate ``ioctl(TIOCSTI, b)`` call.
-    """
-    if isinstance(keys, str):
-        keys = [keys]
-    data = _encode_keys(keys, literal=literal)
-    tty = _get_pane_tty(pane_id)
-    fd = os.open(tty, os.O_RDWR | os.O_NOCTTY)
-    try:
-        for b in data:
-            fcntl.ioctl(fd, termios.TIOCSTI, bytes([b]))
-    except OSError as e:
-        raise KeyInjectionError(f"TIOCSTI ioctl failed on {tty}: {e}") from e
-    finally:
-        os.close(fd)
 
 
 def pane_in_mode(pane_id: str) -> bool:
