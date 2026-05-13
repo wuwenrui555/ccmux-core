@@ -273,9 +273,10 @@ class Backend:
         for custom key combinations not covered by higher-level methods.
 
         Internally dispatches through :mod:`ccmux_core.keys` so the
-        copy-mode-aware path (tmux send-keys vs TIOCSTI) is handled
-        transparently. The blocking subprocess call is offloaded to a
-        thread so the event loop stays responsive.
+        copy-mode-aware path (tmux mode-cancel preamble before
+        ``send-keys``) is handled transparently. The blocking
+        subprocess call is offloaded to a thread so the event loop
+        stays responsive.
         """
         await asyncio.to_thread(
             send_keys,
